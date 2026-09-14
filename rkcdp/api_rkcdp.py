@@ -45,7 +45,7 @@ def _nodes():
         node = _load(os.path.join(d, "node.json"), {})
         now = time.time()
         age = now - status.get("time", 0) if status else None
-        if not manifest.get("base_end_seq"):
+        if "base_end_seq" not in manifest:      # 0 is a valid value
             state = "unprotected"
         elif age is None or age > STALE_SEC:
             state = "stale"
@@ -67,8 +67,8 @@ def _nodes():
             "last_seq": status.get("last_seq"),
             "seq_next": status.get("seq_next"),
             "overflows": status.get("overflows"),
-            "applied_seq": applied.get("last_seq"),
-            "applied_time": applied.get("last_time"),
+            "applied_seq": applied.get("last_seq", manifest.get("base_end_seq")),
+            "applied_time": applied.get("last_time") or manifest.get("base_time"),
             "pending_cycles": pending,
             "replica_bytes": rstat.st_size if rstat else None,
             "replica_used_bytes": rstat.st_blocks * 512 if rstat else None,
