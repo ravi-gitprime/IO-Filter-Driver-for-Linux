@@ -9,12 +9,16 @@ function ManagerRecoveryTab({ showToast }) {
   const [loading, setLoading] = useState(true)
   const [form, setForm]     = useState(null)   // { node, host_id, vmid, storage, bridge, force }
   const [busy, setBusy]     = useState(false)
+  const [apiMissing, setApiMissing] = useState(false)
 
   const load = async () => {
     try {
       const [n, h] = await Promise.all([axios.get('/api/rkcdp/nodes'), axios.get('/api/hosts')])
-      setNodes(n.data || [])
-      setHosts((h.data || []).filter(x => !x.hv_type || /prox|pve/i.test(x.hv_type)))
+      // A missing endpoint falls through to the UI catch-all and returns HTML,
+      // not JSON — guard so the page degrades to a message instead of crashing.
+      setApiMissing(!Array.isArray(n.data))
+      setNodes(Array.isArray(n.data) ? n.data : [])
+      setHosts(Array.isArray(h.data) ? h.data.filter(x => !x.hv_type || /prox|pve/i.test(x.hv_type)) : [])
     } catch (e) {
       showToast?.(`Could not load recovery state: ${e.message}`, 'error')
     } finally {
@@ -79,6 +83,9 @@ function ManagerRecoveryTab({ showToast }) {
           the peer folds them into an always-current replica. Rebuild recreates a dead node from that
           replica as a new VM. It boots as STANDBY and heals from the active manager.
         </div>
+        {apiMissing && <div style={{ fontSize: 12, color: 'var(--red)', marginBottom: 8 }}>
+          /api/rkcdp/nodes is not served by this manager's API — the api_rkcdp module is not loaded (check <code>journalctl -u kvmdr-api</code>).
+        </div>}
         {loading ? <div style={{ fontSize: 12, color: 'var(--text3)' }}>Loading…</div> :
          nodes.length === 0 ? <div style={{ fontSize: 12, color: 'var(--text3)' }}>No protected nodes found. Is rkcdpd running and the replication share mounted?</div> :
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>

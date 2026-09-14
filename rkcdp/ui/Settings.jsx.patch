@@ -1,6 +1,6 @@
 --- /mnt/user-data/uploads/Settings.jsx	2026-09-14 16:47:58.144847000 +0000
-+++ Settings.jsx	2026-09-14 16:51:55.895806267 +0000
-@@ -3931,6 +3931,195 @@
++++ Settings.jsx	2026-09-14 18:03:17.915435531 +0000
+@@ -3931,6 +3931,202 @@
    )
  }
  
@@ -15,12 +15,16 @@
 +  const [loading, setLoading] = useState(true)
 +  const [form, setForm]     = useState(null)   // { node, host_id, vmid, storage, bridge, force }
 +  const [busy, setBusy]     = useState(false)
++  const [apiMissing, setApiMissing] = useState(false)
 +
 +  const load = async () => {
 +    try {
 +      const [n, h] = await Promise.all([axios.get('/api/rkcdp/nodes'), axios.get('/api/hosts')])
-+      setNodes(n.data || [])
-+      setHosts((h.data || []).filter(x => !x.hv_type || /prox|pve/i.test(x.hv_type)))
++      // A missing endpoint falls through to the UI catch-all and returns HTML,
++      // not JSON — guard so the page degrades to a message instead of crashing.
++      setApiMissing(!Array.isArray(n.data))
++      setNodes(Array.isArray(n.data) ? n.data : [])
++      setHosts(Array.isArray(h.data) ? h.data.filter(x => !x.hv_type || /prox|pve/i.test(x.hv_type)) : [])
 +    } catch (e) {
 +      showToast?.(`Could not load recovery state: ${e.message}`, 'error')
 +    } finally {
@@ -85,6 +89,9 @@
 +          the peer folds them into an always-current replica. Rebuild recreates a dead node from that
 +          replica as a new VM. It boots as STANDBY and heals from the active manager.
 +        </div>
++        {apiMissing && <div style={{ fontSize: 12, color: 'var(--red)', marginBottom: 8 }}>
++          /api/rkcdp/nodes is not served by this manager's API — the api_rkcdp module is not loaded (check <code>journalctl -u kvmdr-api</code>).
++        </div>}
 +        {loading ? <div style={{ fontSize: 12, color: 'var(--text3)' }}>Loading…</div> :
 +         nodes.length === 0 ? <div style={{ fontSize: 12, color: 'var(--text3)' }}>No protected nodes found. Is rkcdpd running and the replication share mounted?</div> :
 +        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -196,7 +203,7 @@
  export default function Settings({ showToast, me, initialTab, onTabConsumed }) {
    const role = me?.role || 'viewer'
    const isAdmin    = role === 'admin'
-@@ -3961,6 +4150,8 @@
+@@ -3961,6 +4157,8 @@
        icon:_ti('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>') }] : []),
      ...(isAdmin ? [{ key:'license',  label:'License',
        icon:_ti('<circle cx="12" cy="8" r="6"/><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/>') }] : []),
@@ -205,7 +212,7 @@
      ...(isAdmin ? [{ key:'security', label:'Security',
        icon:_ti('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>') }] : []),
      { key:'appearance', label:'Appearance',
-@@ -4014,6 +4205,7 @@
+@@ -4014,6 +4212,7 @@
        {tab === 'advanced' && isAdmin && <AdvancedTab showToast={showToast} />}
        {tab === 'license'  && isAdmin && <LicenseTab  showToast={showToast} />}
        {tab === 'security' && isAdmin && <SecurityTab showToast={showToast} />}
