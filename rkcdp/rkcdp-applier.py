@@ -96,7 +96,15 @@ def process_node(node_dir):
         with open(applied_path) as f:
             state.update(json.load(f))
 
-    files = sorted(n for n in os.listdir(cycles) if n.endswith(".bin"))
+    # Process complete files in name order, but stop at the first incomplete
+    # one (.tmp): a pending bitmap-recovery file sorts before the records that
+    # follow the gap and must be applied first.
+    files = []
+    for n in sorted(os.listdir(cycles)):
+        if n.endswith(".bin.tmp"):
+            break
+        if n.endswith(".bin"):
+            files.append(n)
     if not files:
         return 0
 

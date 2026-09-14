@@ -6,6 +6,8 @@ Wants=network-online.target remote-fs.target
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 /opt/rkcdp/rkcdpd.py
+Nice=10
+IOSchedulingClass=idle
 Restart=always
 RestartSec=5
 

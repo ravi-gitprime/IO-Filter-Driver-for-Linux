@@ -27,6 +27,7 @@ import sys
 import time
 import signal
 import struct
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dmcdp  # noqa: E402
@@ -55,7 +56,8 @@ def run(cmd, check=True):
 def load_conf():
     conf = {"device": None, "dm_name": "rkcdp",
             "journal": "/replication/_kvmdr/rkcdp",
-            "node": socket.gethostname(), "cycle_sec": 1.0}
+            "node": socket.gethostname(), "cycle_sec": 1.0,
+            "base_copy_mbps": 40}
     if os.path.exists(CONF):
         with open(CONF) as f:
             conf.update(json.load(f))
@@ -175,6 +177,7 @@ def base_copy(conf, jn, cdp_fd, src):
     size = blockdev_sectors(src) * 512
     log("base copy %s (%d MiB) -> %s" % (src, size >> 20, dst))
     t0 = time.time()
+    mbps = float(conf.get("base_copy_mbps") or 0)
     with open(src, "rb", buffering=0) as fi, open(tmp, "wb") as fo:
         fo.truncate(size)
         off = 0
@@ -187,6 +190,12 @@ def base_copy(conf, jn, cdp_fd, src):
                 fo.seek(off)
                 fo.write(buf)
             off += len(buf)
+            if mbps > 0:
+                # throttle: never let the base copy starve the node's own I/O
+                expected = off / (mbps * 1048576)
+                ahead = expected - (time.time() - t0)
+                if ahead > 0:
+                    time.sleep(min(ahead, 1.0))
         fo.flush()
         os.fsync(fo.fileno())
     if stop:
@@ -222,13 +231,30 @@ def node_json(conf):
             "time": time.time()}
 
 
-def recover_from_bitmap(jn, cdp_fd, dm_dev, gap_seq):
+class Recovery(threading.Thread):
     """Ring overflowed: re-read every dirty chunk from the device into a
-    recovery cycle that sorts before the record carrying GAP_BEFORE."""
+    recovery cycle that sorts before the record carrying GAP_BEFORE.
+    Runs in its own thread so the ship loop keeps draining the ring;
+    the .tmp placeholder is created up front so the applier holds at it."""
+
+    def __init__(self, jn, cdp_fd, dm_dev, gap_seq, mbps):
+        super().__init__(daemon=True)
+        self.jn, self.cdp_fd, self.dm_dev, self.gap_seq, self.mbps = jn, cdp_fd, dm_dev, gap_seq, mbps
+        self.path = jn.cycle_path(gap_seq, "a")
+        open(self.path + ".tmp", "wb").close()   # placeholder: applier stops here
+
+    def run(self):
+        try:
+            recover_from_bitmap(self.jn, self.cdp_fd, self.dm_dev, self.gap_seq, self.path, self.mbps)
+        except Exception as e:
+            log("bitmap recovery failed: %s" % e)
+
+
+def recover_from_bitmap(jn, cdp_fd, dm_dev, gap_seq, path, mbps=0):
     bm, chunk, nbits = dmcdp.read_bitmap(cdp_fd, clear=True)
-    path = jn.cycle_path(gap_seq, "a")
     total = 0
     ts = time.time_ns()
+    t0 = time.time()
     with open(dm_dev, "rb", buffering=0) as dev, open(path + ".tmp", "wb") as out:
         for sector, nsect in dmcdp.bitmap_extents(bm, chunk, nbits):
             off = sector * 512
@@ -241,6 +267,10 @@ def recover_from_bitmap(jn, cdp_fd, dm_dev, gap_seq):
                 off += n
                 remaining -= n
                 total += n
+                if mbps > 0:
+                    ahead = total / (mbps * 1048576) - (time.time() - t0)
+                    if ahead > 0:
+                        time.sleep(min(ahead, 1.0))
         out.flush()
         os.fsync(out.fileno())
     os.replace(path + ".tmp", path)
@@ -265,7 +295,6 @@ def main():
         jn.write_json("manifest.json", jn.manifest)
 
     # start shipping BEFORE the base copy so nothing is missed
-    import threading
     shipper = threading.Thread(target=ship_loop, args=(conf, jn, cdp_fd, dm_dev), daemon=True)
     shipper.start()
 
@@ -294,6 +323,9 @@ def ship_loop(conf, jn, cdp_fd, dm_dev):
     last_seq = None
     shipped_bytes = 0
     last_status = 0.0
+    recovery = None          # running Recovery thread
+    recovery_queue = []      # created (placeholder written) but not yet started
+    mbps = float(conf.get("base_copy_mbps") or 0)
 
     while not stop:
         if cur is None:
@@ -329,7 +361,9 @@ def ship_loop(conf, jn, cdp_fd, dm_dev):
                     cur.write(buf[:consumed], first, last)
                     cur.close()
                     cur = None
-                recover_from_bitmap(jn, cdp_fd, dm_dev, gap)
+                # placeholder is written now (ordering); the thread starts when
+                # the previous recovery is done. Draining never waits.
+                recovery_queue.append(Recovery(jn, cdp_fd, dm_dev, gap, mbps))
                 # strip the flag so the applier treats it as a normal record
                 rest = bytearray(buf[consumed:])
                 struct.pack_into("<I", rest, 8, struct.unpack_from("<I", rest, 8)[0] & ~dmcdp.F_GAP_BEFORE)
@@ -346,6 +380,10 @@ def ship_loop(conf, jn, cdp_fd, dm_dev):
         if cur is not None and time.time() - cur_started >= cycle_sec:
             cur.close()
             cur = None
+
+        if recovery_queue and (recovery is None or not recovery.is_alive()):
+            recovery = recovery_queue.pop(0)
+            recovery.start()
 
         if time.time() - last_status >= cycle_sec:
             st = dmcdp.status(cdp_fd)

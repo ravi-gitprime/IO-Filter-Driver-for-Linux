@@ -19,8 +19,10 @@ install -m 755 "$HERE"/initramfs/hook /etc/initramfs-tools/hooks/rkcdp
 install -m 755 "$HERE"/initramfs/local-top /etc/initramfs-tools/scripts/local-top/rkcdp
 install -m 644 "$HERE"/udev/99-rkcdp.rules /etc/udev/rules.d/
 echo "DM_NAME=rkcdp" > /etc/rkcdp/initramfs.conf
+echo "options dm-cdp ring_mb=1024" > /etc/modprobe.d/dm-cdp.conf
+echo "RESUME=none" > /etc/initramfs-tools/conf.d/resume
 [ -f /etc/rkcdp/rkcdp.conf ] || cat > /etc/rkcdp/rkcdp.conf <<CONF
-{ "dm_name": "rkcdp", "journal": "$JOURNAL", "cycle_sec": 1.0 }
+{ "dm_name": "rkcdp", "journal": "$JOURNAL", "cycle_sec": 1.0, "base_copy_mbps": 40 }
 CONF
 update-initramfs -u
 systemctl daemon-reload
