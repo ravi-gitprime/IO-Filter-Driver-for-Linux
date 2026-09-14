@@ -11,4 +11,7 @@ tests/smoke.sh  # loop device, write, drain, replay, compare (as root)
 
 Layout: `drivers/md/dm-cdp.c` target, `include/uapi/linux/dm-cdp.h` ABI,
 `tools/cdp-drain` reference consumer, `tools/cdp-apply` stream replay.
-Ships as DKMS (`dkms.conf`). Kernels: 6.1 (Debian 12), 6.8 (Ubuntu 24.04), 6.12 (Debian 13).
+Ships as DKMS (`dkms.conf`).
+
+Build-verified (W=1, no warnings): 6.1.0-49 (Debian 12), 6.8.0-146 (Ubuntu 24.04), 6.12.107 (Debian 13).
+Runtime-verified: 6.1.0-49 (smoke, overflow, fio/PIT, real virtual disk).
