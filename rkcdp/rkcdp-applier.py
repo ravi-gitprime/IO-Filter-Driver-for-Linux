@@ -133,14 +133,23 @@ def main():
     signal.signal(signal.SIGINT, on_sig)
     me = socket.gethostname()
 
-    # single instance per journal
+    # single active applier per journal; others wait (standby) until the
+    # holder exits or dies, then take over automatically
     lockf = open(os.path.join(args.journal, ".applier.lock"), "w")
-    try:
-        fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        raise SystemExit("another applier holds %s" % lockf.name)
+    waited = False
+    while not stop:
+        try:
+            fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if not waited:
+                log("standby: another applier is active on %s" % args.journal)
+                waited = True
+            time.sleep(5)
+    if stop:
+        return
 
-    log("watching %s" % args.journal)
+    log("active: watching %s" % args.journal)
     while not stop:
         total = 0
         for node in sorted(os.listdir(args.journal)):
