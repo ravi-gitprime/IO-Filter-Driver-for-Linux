@@ -1,0 +1,21 @@
+--- /mnt/user-data/uploads/api.py	2026-09-14 16:47:44.510691000 +0000
++++ api.py	2026-09-14 21:03:56.169274565 +0000
+@@ -2972,7 +2972,8 @@
+ # Services per node-type
+ _SERVICES_LOCAL = ['postgresql@15-main', 'ollama',
+                    'kvmdr-api', 'kvmdr-ai-detector',
+-                   'kvmdr-dbwatchdog.timer']
++                   'kvmdr-dbwatchdog.timer',
++                   'rkcdpd', 'rkcdp-applier']
+ _SERVICES_HYPERVISOR = ['kvmdr-agent']
+ _SERVICES_ALLOWED = set(_SERVICES_LOCAL + _SERVICES_HYPERVISOR)
+ 
+@@ -2983,6 +2984,8 @@
+     'kvmdr-api':               'KVMDR API',
+     'kvmdr-ai-detector':       'Ransomware Detector',
+     'kvmdr-dbwatchdog.timer':  'DB Watchdog',
++    'rkcdpd':                  'Manager Protection (rkcdp)',
++    'rkcdp-applier':           'Manager Replica Applier',
+     'kvmdr-agent':             'Host Agent',
+ }
+ 
