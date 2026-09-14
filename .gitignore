@@ -1,0 +1,10 @@
+*.o
+*.ko
+*.mod*
+*.cmd
+.*.cmd
+Module.symvers
+modules.order
+.tmp_versions/
+tools/cdp-drain
+tools/cdp-apply
