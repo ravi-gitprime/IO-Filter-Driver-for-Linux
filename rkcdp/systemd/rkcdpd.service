@@ -1,0 +1,13 @@
+[Unit]
+Description=rkcdp - ship disk writes to the replica journal
+After=network-online.target remote-fs.target
+Wants=network-online.target remote-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/rkcdp/rkcdpd.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

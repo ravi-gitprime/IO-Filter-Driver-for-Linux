@@ -1,0 +1,6 @@
+{
+  "device": "/dev/sda",
+  "dm_name": "rkcdp",
+  "journal": "/replication/_kvmdr/rkcdp",
+  "cycle_sec": 1.0
+}
