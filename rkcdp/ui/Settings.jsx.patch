@@ -1,6 +1,6 @@
 --- /mnt/user-data/uploads/Settings.jsx	2026-09-14 16:47:58.144847000 +0000
-+++ Settings.jsx	2026-09-14 18:03:17.915435531 +0000
-@@ -3931,6 +3931,202 @@
++++ Settings.jsx	2026-09-14 19:00:36.190219793 +0000
+@@ -3931,6 +3931,195 @@
    )
  }
  
@@ -164,13 +164,6 @@
 +          </tbody>
 +        </table>}
 +      </Section>
-+      <Section title="Both managers down?">
-+        <div style={{ fontSize: 12, color: 'var(--text2)' }}>
-+          Replicas live on the replication share, not on the managers. From any Proxmox host with
-+          the share mounted: <code>rkcdp-rebuild --node &lt;name&gt; --host &lt;this host&gt; --no-standby</code>,
-+          then promote it. See the admin guide, "Manager recovery".
-+        </div>
-+      </Section>
 +    </>
 +  )
 +}
@@ -203,7 +196,7 @@
  export default function Settings({ showToast, me, initialTab, onTabConsumed }) {
    const role = me?.role || 'viewer'
    const isAdmin    = role === 'admin'
-@@ -3961,6 +4157,8 @@
+@@ -3961,6 +4150,8 @@
        icon:_ti('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>') }] : []),
      ...(isAdmin ? [{ key:'license',  label:'License',
        icon:_ti('<circle cx="12" cy="8" r="6"/><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/>') }] : []),
@@ -212,7 +205,7 @@
      ...(isAdmin ? [{ key:'security', label:'Security',
        icon:_ti('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>') }] : []),
      { key:'appearance', label:'Appearance',
-@@ -4014,6 +4212,7 @@
+@@ -4014,6 +4205,7 @@
        {tab === 'advanced' && isAdmin && <AdvancedTab showToast={showToast} />}
        {tab === 'license'  && isAdmin && <LicenseTab  showToast={showToast} />}
        {tab === 'security' && isAdmin && <SecurityTab showToast={showToast} />}

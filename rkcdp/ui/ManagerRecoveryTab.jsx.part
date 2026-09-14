@@ -158,13 +158,6 @@ function ManagerRecoveryTab({ showToast }) {
           </tbody>
         </table>}
       </Section>
-      <Section title="Both managers down?">
-        <div style={{ fontSize: 12, color: 'var(--text2)' }}>
-          Replicas live on the replication share, not on the managers. From any Proxmox host with
-          the share mounted: <code>rkcdp-rebuild --node &lt;name&gt; --host &lt;this host&gt; --no-standby</code>,
-          then promote it. See the admin guide, "Manager recovery".
-        </div>
-      </Section>
     </>
   )
 }
