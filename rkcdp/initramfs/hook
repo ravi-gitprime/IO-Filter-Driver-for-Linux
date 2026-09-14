@@ -1,0 +1,14 @@
+#!/bin/sh
+# initramfs-tools hook: ship dm-cdp + tools needed to wrap the root disk
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0;; esac
+. /usr/share/initramfs-tools/hook-functions
+
+manual_add_modules dm-mod dm-cdp
+copy_exec /sbin/dmsetup /sbin
+copy_exec /sbin/kpartx /sbin
+copy_exec /sbin/blockdev /sbin
+copy_exec /sbin/blkid /sbin
+[ -f /etc/rkcdp/initramfs.conf ] && { mkdir -p "$DESTDIR/etc/rkcdp"; cp /etc/rkcdp/initramfs.conf "$DESTDIR/etc/rkcdp/"; }
+exit 0

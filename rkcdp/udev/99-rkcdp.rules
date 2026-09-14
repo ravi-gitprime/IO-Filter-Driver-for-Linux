@@ -1,0 +1,3 @@
+# Prefer the dm-cdp wrapped partitions for /dev/disk/by-* symlinks so that
+# fstab UUID= entries (/, /boot/efi) mount through dm-cdp, not the raw disk.
+ENV{DM_NAME}=="rkcdp*", OPTIONS+="link_priority=100"

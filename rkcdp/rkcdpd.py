@@ -13,7 +13,7 @@ Flow:
   5. write status.json every cycle, node.json hourly
 
 Config: /etc/rkcdp/rkcdp.conf (JSON), keys:
-  device      "/dev/sda"           disk to protect (whole disk)
+  device      omit = use the initramfs-wrapped root disk; or "/dev/sdb" etc.
   dm_name     "rkcdp"              device-mapper name
   journal     "/replication/_kvmdr/rkcdp"
   node        hostname             directory name under journal
@@ -53,7 +53,7 @@ def run(cmd, check=True):
 
 
 def load_conf():
-    conf = {"device": "/dev/sda", "dm_name": "rkcdp",
+    conf = {"device": None, "dm_name": "rkcdp",
             "journal": "/replication/_kvmdr/rkcdp",
             "node": socket.gethostname(), "cycle_sec": 1.0}
     if os.path.exists(CONF):
@@ -66,11 +66,37 @@ def blockdev_sectors(dev):
     return int(run(["blockdev", "--getsz", dev]).stdout.strip())
 
 
+def root_disk():
+    """Whole disk that holds / (parent of the root partition)."""
+    src = run(["findmnt", "-n", "-o", "SOURCE", "/"]).stdout.strip()
+    name = os.path.basename(os.path.realpath(src))
+    parent = os.path.realpath("/sys/class/block/%s/.." % name)
+    return "/dev/" + os.path.basename(parent)
+
+
+def table_device(name):
+    """Backing device of an existing cdp mapping (from its table's major:minor)."""
+    tbl = run(["dmsetup", "table", name]).stdout.split()
+    if len(tbl) < 5 or tbl[2] != "cdp":
+        raise SystemExit("dm %s is not a cdp target: %s" % (name, " ".join(tbl)))
+    devname = os.path.basename(os.path.realpath("/sys/dev/block/" + tbl[3]))
+    return "/dev/" + devname
+
+
 def ensure_target(conf):
-    """Create the dm-cdp mapping if it is not already there. Returns /dev/cdpN."""
+    """Use the existing dm-cdp mapping (initramfs-wrapped root disk) or create
+    one for conf['device']. Sets conf['device'] to the real backing disk.
+    Returns /dev/cdpN."""
     name = conf["dm_name"]
     st = run(["dmsetup", "status", name], check=False)
-    if st.returncode != 0:
+    if st.returncode == 0:
+        conf["device"] = table_device(name)
+    else:
+        if not conf.get("device"):
+            conf["device"] = root_disk()
+            if conf["device"] == root_disk():
+                raise SystemExit("root disk %s is not wrapped: install the initramfs hook and reboot, "
+                                 "or set 'device' in %s to a non-root disk" % (conf["device"], CONF))
         if run(["lsmod"]).stdout.find("dm_cdp") < 0:
             run(["modprobe", "dm-cdp"])
         sectors = blockdev_sectors(conf["device"])
