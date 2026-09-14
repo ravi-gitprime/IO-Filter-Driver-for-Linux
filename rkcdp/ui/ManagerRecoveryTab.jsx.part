@@ -1,0 +1,187 @@
+// ─── Manager Recovery (rkcdp) ───────────────────────────────────────────────
+// Settings → Manager Recovery. Shows every node protected by rkcdpd (from
+// /replication/_kvmdr/rkcdp/<node>/) and rebuilds a dead one from its
+// replica.raw on a Proxmox host. Rebuilt nodes always come up STANDBY.
+
+function ManagerRecoveryTab({ showToast }) {
+  const [nodes, setNodes]   = useState([])
+  const [hosts, setHosts]   = useState([])
+  const [loading, setLoading] = useState(true)
+  const [form, setForm]     = useState(null)   // { node, host_id, vmid, storage, bridge, force }
+  const [busy, setBusy]     = useState(false)
+
+  const load = async () => {
+    try {
+      const [n, h] = await Promise.all([axios.get('/api/rkcdp/nodes'), axios.get('/api/hosts')])
+      setNodes(n.data || [])
+      setHosts((h.data || []).filter(x => !x.hv_type || /prox|pve/i.test(x.hv_type)))
+    } catch (e) {
+      showToast?.(`Could not load recovery state: ${e.message}`, 'error')
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => {
+    load()
+    const t = setInterval(load, 3000)
+    return () => clearInterval(t)
+  }, [])
+
+  const stateBadge = (s) => {
+    const m = {
+      cdp:         { label: 'CDP',         color: 'var(--green)' },
+      bitmap:      { label: 'Bitmap',      color: 'var(--yellow, #eab308)' },
+      stale:       { label: 'Stale',       color: 'var(--red)' },
+      unprotected: { label: 'Unprotected', color: 'var(--text3)' },
+    }[s] || { label: s, color: 'var(--text3)' }
+    return <span style={{ color: m.color, fontWeight: 600 }}>{m.label}</span>
+  }
+  const gb = (b) => b == null ? '—' : `${(b / 1073741824).toFixed(1)} GB`
+  const ago = (t) => t ? `${Math.max(0, Math.round(Date.now() / 1000 - t))}s ago` : '—'
+  const when = (t) => t ? new Date(t * 1000).toLocaleTimeString() : '—'
+
+  const openRebuild = (n) => setForm({
+    node: n.node, host_id: hosts[0]?.host_id ?? '', vmid: '', storage: 'local-lvm',
+    bridge: 'vmbr0', force: n.state !== 'stale' && n.state !== 'unprotected',
+  })
+
+  const submit = async () => {
+    if (!form.host_id) { showToast?.('Pick a host', 'error'); return }
+    const host = hosts.find(h => String(h.host_id) === String(form.host_id))
+    if (!confirm(`Rebuild ${form.node} on ${host?.hostname || form.host_id} from its latest replica?\n\nThe node will boot as STANDBY. Make sure the old VM is stopped/removed first (same MAC and IP).`)) return
+    setBusy(true)
+    try {
+      await axios.post('/api/rkcdp/rebuild', {
+        node: form.node, host_id: Number(form.host_id),
+        vmid: form.vmid ? Number(form.vmid) : undefined,
+        storage: form.storage || undefined, bridge: form.bridge || undefined,
+        force: !!form.force,
+      })
+      showToast?.(`Rebuild of ${form.node} started`)
+      setForm(null)
+      load()
+    } catch (e) {
+      showToast?.(`Rebuild failed to start: ${e.response?.data?.detail || e.message}`, 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const th = { textAlign: 'left', fontSize: 11, color: 'var(--text2)', padding: '6px 8px', borderBottom: '1px solid var(--border2)' }
+  const td = { fontSize: 12, padding: '8px 8px', borderBottom: '1px solid var(--border)', verticalAlign: 'top' }
+
+  return (
+    <>
+      <Section title="Manager Recovery"
+        right={<button style={btnStyle()} onClick={load}>Refresh</button>}>
+        <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 10 }}>
+          Each manager node ships every disk write to <code>/replication/_kvmdr/rkcdp/&lt;node&gt;/</code>;
+          the peer folds them into an always-current replica. Rebuild recreates a dead node from that
+          replica as a new VM. It boots as STANDBY and heals from the active manager.
+        </div>
+        {loading ? <div style={{ fontSize: 12, color: 'var(--text3)' }}>Loading…</div> :
+         nodes.length === 0 ? <div style={{ fontSize: 12, color: 'var(--text3)' }}>No protected nodes found. Is rkcdpd running and the replication share mounted?</div> :
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead><tr>
+            <th style={th}>Node</th><th style={th}>Protection</th><th style={th}>Replica</th>
+            <th style={th}>Lag</th><th style={th}>Size</th><th style={th}></th>
+          </tr></thead>
+          <tbody>
+            {nodes.map(n => {
+              const lag = (n.seq_next != null && n.applied_seq != null) ? Math.max(0, n.seq_next - 1 - n.applied_seq) : null
+              return (
+                <Fragment key={n.node}>
+                  <tr>
+                    <td style={td}>
+                      <div style={{ fontWeight: 600 }}>{n.node}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text3)' }}>{(n.ips || []).join(' ')} · {n.device || ''}</div>
+                    </td>
+                    <td style={td}>
+                      {stateBadge(n.state)}
+                      <div style={{ fontSize: 10, color: 'var(--text3)' }}>
+                        {n.state === 'stale' ? `last seen ${ago(n.status_age_sec ? Date.now()/1000 - n.status_age_sec : null)}` :
+                         n.status_age_sec != null ? `heartbeat ${n.status_age_sec}s ago` : 'no status'}
+                        {n.overflows ? ` · ${n.overflows} overflows` : ''}
+                      </div>
+                    </td>
+                    <td style={td}>
+                      <div>current as of {when(n.applied_time)}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text3)' }}>seq {n.applied_seq ?? '—'}{n.pending_cycles ? ` · ${n.pending_cycles} cycles pending` : ''}</div>
+                    </td>
+                    <td style={td}>{lag == null ? '—' : lag === 0 ? <span style={{ color: 'var(--green)' }}>0</span> : `${lag} writes`}</td>
+                    <td style={td}>{gb(n.replica_used_bytes)}<div style={{ fontSize: 10, color: 'var(--text3)' }}>of {gb(n.replica_bytes)}</div></td>
+                    <td style={{ ...td, textAlign: 'right' }}>
+                      {n.rebuilding
+                        ? <span style={{ fontSize: 11, color: 'var(--blue)' }}>rebuilding…</span>
+                        : <button style={btnStyle(n.state === 'stale' ? 'red' : undefined)}
+                                  disabled={n.state === 'unprotected'}
+                                  onClick={() => openRebuild(n)}>Rebuild</button>}
+                    </td>
+                  </tr>
+                  {n.rebuild && (n.rebuilding || n.rebuild.state === 'failed' || (n.rebuild.finished && Date.now()/1000 - n.rebuild.finished < 600)) && (
+                    <tr><td colSpan={6} style={{ ...td, background: 'var(--bg2)' }}>
+                      <RebuildProgress p={n.rebuild} />
+                    </td></tr>
+                  )}
+                  {form && form.node === n.node && (
+                    <tr><td colSpan={6} style={{ ...td, background: 'var(--bg2)' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 10 }}>
+                        <Field label="Proxmox host">
+                          <Sel value={form.host_id} onChange={v => setForm(f => ({ ...f, host_id: v }))}
+                               options={hosts.map(h => ({ value: h.host_id, label: `${h.hostname} (${h.ip})` }))} />
+                        </Field>
+                        <Field label="VMID" hint="blank = next free 9100+">
+                          <Inp value={form.vmid} onChange={v => setForm(f => ({ ...f, vmid: v }))} placeholder="auto" />
+                        </Field>
+                        <Field label="Storage"><Inp value={form.storage} onChange={v => setForm(f => ({ ...f, storage: v }))} /></Field>
+                        <Field label="Bridge"><Inp value={form.bridge} onChange={v => setForm(f => ({ ...f, bridge: v }))} /></Field>
+                      </div>
+                      {form.force && <div style={{ fontSize: 11, color: 'var(--yellow, #eab308)', marginBottom: 8 }}>
+                        This node still reports alive. Rebuilding creates a second VM with the same MAC/IP — stop the old one first.
+                      </div>}
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button style={btnStyle('red')} disabled={busy} onClick={submit}>{busy ? 'Starting…' : 'Rebuild as STANDBY'}</button>
+                        <button style={btnStyle()} onClick={() => setForm(null)}>Cancel</button>
+                      </div>
+                    </td></tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>}
+      </Section>
+      <Section title="Both managers down?">
+        <div style={{ fontSize: 12, color: 'var(--text2)' }}>
+          Replicas live on the replication share, not on the managers. From any Proxmox host with
+          the share mounted: <code>rkcdp-rebuild --node &lt;name&gt; --host &lt;this host&gt; --no-standby</code>,
+          then promote it. See the admin guide, "Manager recovery".
+        </div>
+      </Section>
+    </>
+  )
+}
+
+function RebuildProgress({ p }) {
+  const names = ['check', 'quiesce', 'copy', 'mark standby', 'create VM', 'boot']
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+        {names.map((nm, i) => {
+          const n = i + 1
+          const done = p.step > n || p.state === 'done'
+          const cur = p.step === n && p.state === 'running'
+          const bad = p.step === n && p.state === 'failed'
+          return <span key={nm} style={{
+            fontSize: 10, padding: '2px 8px', borderRadius: 10,
+            background: bad ? 'rgba(239,68,68,0.15)' : done ? 'rgba(34,197,94,0.15)' : cur ? 'rgba(59,130,246,0.15)' : 'var(--bg3)',
+            color: bad ? 'var(--red)' : done ? 'var(--green)' : cur ? 'var(--blue)' : 'var(--text3)',
+          }}>{n}. {nm}</span>
+        })}
+      </div>
+      <div style={{ fontSize: 12, color: p.state === 'failed' ? 'var(--red)' : p.state === 'done' ? 'var(--green)' : 'var(--text)' }}>
+        {p.state === 'failed' ? `Failed: ${p.error}` : p.msg}
+      </div>
+    </div>
+  )
+}

@@ -191,7 +191,9 @@ def node_json(conf):
     return {"hostname": socket.gethostname(), "device": conf["device"],
             "disk_bytes": blockdev_sectors(conf["device"]) * 512,
             "cpus": os.cpu_count(), "mem_mb": mem_kb // 1024,
-            "macs": macs, "ips": ips, "time": time.time()}
+            "macs": macs, "ips": ips,
+            "firmware": "efi" if os.path.exists("/sys/firmware/efi") else "bios",
+            "time": time.time()}
 
 
 def recover_from_bitmap(jn, cdp_fd, dm_dev, gap_seq):

@@ -1,0 +1,18 @@
+--- /mnt/user-data/uploads/api.py	2026-09-14 16:47:44.510691000 +0000
++++ api.py	2026-09-14 16:52:09.966518822 +0000
+@@ -23857,6 +23857,15 @@
+             drift.append({"file": rel, "state": "modified"})
+     return {"drift": drift}
+ 
++# ─── rkcdp: manager self-protection / bare-metal recovery (Settings → Manager Recovery)
++# Must be registered BEFORE the UI catch-all below.
++try:
++    import api_rkcdp
++    api_rkcdp.init(app, get_db=get_db, require_admin=require_admin)
++except Exception as _e:
++    print(f"rkcdp endpoints not loaded: {_e}")
++
++
+ # ══════════════════════════════════════════════════════════════════════════════
+ # UI MOUNT (must be LAST route registered — catches all paths)
+ # ══════════════════════════════════════════════════════════════════════════════

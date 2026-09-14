@@ -88,6 +88,8 @@ def process_node(node_dir):
     cycles = os.path.join(node_dir, "cycles")
     if not os.path.exists(replica) or not os.path.isdir(cycles):
         return 0
+    if os.path.exists(os.path.join(node_dir, ".rebuild.lock")):
+        return 0  # rkcdp-rebuild is copying the replica; leave it untouched
     applied_path = os.path.join(node_dir, "applied.json")
     state = {"last_seq": None, "last_time": None, "cycles": 0, "bytes": 0}
     if os.path.exists(applied_path):
