@@ -10,3 +10,4 @@ tools/cdp-drain
 tools/cdp-apply
 __pycache__/
 rkcdp/dist/
+rkcdp/assets/
