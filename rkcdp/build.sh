@@ -15,8 +15,8 @@ done
 echo "== assets"
 rm -rf assets && mkdir -p assets
 cp "$KO" assets/dm-cdp.ko
-cp dist/rkcdpd dist/rkcdp-rebuild dist/rkcdp-seed rkcdp-firstboot.sh assets/
-cp systemd/rkcdpd.service systemd/rkcdp-firstboot.service assets/
+cp dist/rkcdpd dist/rkcdp-rebuild dist/rkcdp-seed assets/
+cp systemd/rkcdpd.service assets/
 cp initramfs/hook initramfs/local-top udev/99-rkcdp.rules assets/
 echo "== rkcdp-setup"
 ionice -c3 nice -n19 python3 -m nuitka --onefile --output-dir=dist --output-filename=rkcdp-setup \

@@ -30,9 +30,7 @@ FILES = [
     ("rkcdpd",                     "/opt/rkcdp/rkcdpd",                                     0o755),
     ("rkcdp-rebuild",              "/opt/rkcdp/rkcdp-rebuild",                              0o755),
     ("rkcdp-seed",                 "/opt/rkcdp/rkcdp-seed",                                 0o755),
-    ("rkcdp-firstboot.sh",         "/opt/rkcdp/rkcdp-firstboot.sh",                         0o755),
     ("rkcdpd.service",             "/etc/systemd/system/rkcdpd.service",                    0o644),
-    ("rkcdp-firstboot.service",    "/etc/systemd/system/rkcdp-firstboot.service",           0o644),
     ("hook",                       "/etc/initramfs-tools/hooks/rkcdp",                      0o755),
     ("local-top",                  "/etc/initramfs-tools/scripts/local-top/rkcdp",          0o755),
     ("99-rkcdp.rules",             "/etc/udev/rules.d/99-rkcdp.rules",                      0o644),
@@ -73,8 +71,9 @@ def do_install(journal):
 
     for asset, dst, mode in FILES:
         install_file(asset, dst, mode)
-    # leftovers from the applier era
-    for p in ("/etc/systemd/system/rkcdp-applier.service", "/opt/rkcdp/rkcdp-applier"):
+    # leftovers from earlier builds
+    for p in ("/etc/systemd/system/rkcdp-applier.service", "/opt/rkcdp/rkcdp-applier",
+              "/etc/systemd/system/rkcdp-firstboot.service", "/opt/rkcdp/rkcdp-firstboot.sh"):
         if os.path.exists(p):
             os.remove(p)
     for p in ("/opt/rkcdp/rkcdpd.py", "/opt/rkcdp/rkcdp-rebuild.py", "/opt/rkcdp/dmcdp.py",
@@ -106,14 +105,15 @@ def do_install(journal):
     sh("depmod -a")
     sh("update-initramfs -u")
     sh("systemctl daemon-reload")
-    sh("systemctl disable rkcdp-applier >/dev/null 2>&1", check=False)
-    sh("systemctl enable rkcdpd rkcdp-firstboot >/dev/null")
-    # upgrade in place if the daemon is already running
+    sh("systemctl disable rkcdp-applier rkcdp-firstboot >/dev/null 2>&1", check=False)
+    # rkcdpd is NOT enabled here: setup's seed stage starts it once the node
+    # has its identity and its replica is seeded. An already-running daemon
+    # (upgrade on a live node) is restarted in place.
     if sh("systemctl is-active rkcdpd", check=False).stdout.strip() == "active":
         sh("systemctl restart rkcdpd", check=False)
         print("rkcdp-setup: upgraded, rkcdpd restarted")
     else:
-        print("rkcdp-setup: installed. Root disk is wrapped from the next boot (kvmdr.cdp=0 disables).")
+        print("rkcdp-setup: installed. dm-cdp wraps the root disk from the next boot; rkcdpd starts after seeding.")
 
 
 def do_check():
@@ -127,15 +127,15 @@ def do_check():
     n = sh(f"lsinitramfs /boot/initrd.img-{KVER} 2>/dev/null | grep -c dm-cdp.ko", check=False).stdout.strip()
     line("module in initrd", n not in ("", "0"))
     line("daemon binary", os.path.exists("/opt/rkcdp/rkcdpd"))
-    en = sh("systemctl is-enabled rkcdpd rkcdp-firstboot 2>/dev/null", check=False).stdout.split()
-    line("units enabled", en == ["enabled", "enabled"], " ".join(en))
+    en = sh("systemctl is-enabled rkcdpd 2>/dev/null", check=False).stdout.strip()
+    print(f"  {'rkcdpd unit':<18}{en or 'absent'}  (enabled by the seed stage)")
     wrapped = sh("findmnt -n -o SOURCE /", check=False).stdout.strip().startswith("/dev/mapper/rkcdp")
     print(f"  {'root wrapped':<18}{'yes' if wrapped else 'no (takes effect at next boot)'}")
     return 0 if ok else 1
 
 
 def do_remove():
-    sh("systemctl disable --now rkcdpd rkcdp-firstboot >/dev/null 2>&1", check=False)
+    sh("systemctl disable --now rkcdpd >/dev/null 2>&1", check=False)
     for _, dst, _ in FILES:
         if dst.startswith(f"/lib/modules/"):
             continue

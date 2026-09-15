@@ -184,12 +184,8 @@ def main():
         os.remove(lock)
         lock = None
 
-        # 4 mark standby
-        if a.no_standby:
-            pg.step(4, "skipping standby marker (--no-standby)")
-        else:
-            pg.step(4, "marking copy to boot as STANDBY")
-            mark_standby(copy_path)
+        # 4 (the boot fence decides primary/replica on first boot; nothing to mark)
+        pg.step(4, "copy ready; boot fence will place the node as replica")
 
         # 5 create VM
         mem = int(node.get("mem_mb") or 4096)
