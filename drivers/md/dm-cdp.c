@@ -515,6 +515,7 @@ static int cdp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ret = dm_get_device(ti, argv[0], dm_table_get_mode(ti->table), &t->dev);
 	if (ret) {
 		ti->error = "Device lookup failed";
+		pr_err("dm-cdp [FAILED] Device lookup failed\\n");
 		goto err_free;
 	}
 
@@ -522,6 +523,7 @@ static int cdp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	t->ring = vmalloc(t->ring_size);
 	if (!t->ring) {
 		ti->error = "Cannot allocate ring";
+		pr_err("dm-cdp [FAILED] Cannot allocate ring\\n");
 		ret = -ENOMEM;
 		goto err_dev;
 	}
@@ -531,6 +533,7 @@ static int cdp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	t->bitmap = bitmap_zalloc(t->nbits, GFP_KERNEL);
 	if (!t->bitmap) {
 		ti->error = "Cannot allocate bitmap";
+		pr_err("dm-cdp [FAILED] Cannot allocate bitmap\\n");
 		ret = -ENOMEM;
 		goto err_ring;
 	}
@@ -538,6 +541,7 @@ static int cdp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	t->minor = ida_alloc_max(&cdp_ida, CDP_MAX_MINORS - 1, GFP_KERNEL);
 	if (t->minor < 0) {
 		ti->error = "No free minor";
+		pr_err("dm-cdp [FAILED] No free minor\\n");
 		ret = t->minor;
 		goto err_bitmap;
 	}
@@ -547,6 +551,7 @@ static int cdp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ret = cdev_add(&t->cdev, MKDEV(MAJOR(cdp_devt), t->minor), 1);
 	if (ret) {
 		ti->error = "cdev_add failed";
+		pr_err("dm-cdp [FAILED] cdev_add failed\\n");
 		goto err_ida;
 	}
 
@@ -555,6 +560,7 @@ static int cdp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 				  "cdp%d", t->minor);
 	if (IS_ERR(t->device)) {
 		ti->error = "device_create failed";
+		pr_err("dm-cdp [FAILED] device_create failed\\n");
 		ret = PTR_ERR(t->device);
 		goto err_cdev;
 	}
@@ -562,6 +568,7 @@ static int cdp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ret = dm_set_target_max_io_len(ti, CDP_MAX_IO_SECTORS);
 	if (ret) {
 		ti->error = "dm_set_target_max_io_len failed";
+		pr_err("dm-cdp [FAILED] dm_set_target_max_io_len failed\\n");
 		goto err_device;
 	}
 
@@ -573,9 +580,8 @@ static int cdp_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ti->per_io_data_size = sizeof(struct cdp_pb);
 	ti->private = t;
 
-	DMINFO("attached %s +%llu (%llu sectors) as /dev/cdp%d, ring %u MiB, chunk %u KiB",
-	       t->dev->name, (unsigned long long)t->start,
-	       (unsigned long long)ti->len, t->minor, ring_mb, chunk_kb);
+	pr_info("dm-cdp attached to %s (%llu sectors) as /dev/cdp%d, ring %u MiB [SUCCESS]\n",
+		t->dev->name, (unsigned long long)ti->len, t->minor, ring_mb);
 	return 0;
 
 err_device:
@@ -782,9 +788,11 @@ static int __init dm_cdp_init(void)
 
 	ret = dm_register_target(&cdp_target_type);
 	if (ret) {
-		DMERR("register failed %d", ret);
+		pr_err("dm-cdp [FAILED] target registration: %d\n", ret);
 		goto err_class;
 	}
+	pr_info("dm-cdp %d.%d.%d loaded [SUCCESS]\n", cdp_target_type.version[0],
+		cdp_target_type.version[1], cdp_target_type.version[2]);
 	return 0;
 
 err_class:
