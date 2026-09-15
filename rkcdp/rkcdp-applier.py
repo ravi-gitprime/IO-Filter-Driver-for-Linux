@@ -24,6 +24,8 @@ import fcntl
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dmcdp  # noqa: E402
 
+BATCH_FILES = 200            # cycle files per fsync/applied.json write
+BATCH_BYTES = 256 << 20      # or this many payload bytes
 FALLOC_FL_KEEP_SIZE = 0x01
 FALLOC_FL_PUNCH_HOLE = 0x02
 stop = False
@@ -127,19 +129,34 @@ def _process_node_locked(node_dir, replica, cycles):
     n_done = 0
     rfd = os.open(replica, os.O_RDWR)
     try:
+        # batch: apply many small cycle files, then one fsync + one applied.json
+        # write. Per-file fsync over NFS could not keep up with 1 s cycles.
+        batch, batch_bytes = [], 0
         for name in files:
             if stop:
                 break
             path = os.path.join(cycles, name)
             last, nbytes, nrec = apply_file(path, rfd, state["last_seq"])
-            os.fsync(rfd)
             state["last_seq"] = last
-            state["last_time"] = time.time()
             state["cycles"] += 1
             state["bytes"] += nbytes
+            batch.append(path)
+            batch_bytes += nbytes
+            if len(batch) >= BATCH_FILES or batch_bytes >= BATCH_BYTES:
+                os.fsync(rfd)
+                state["last_time"] = time.time()
+                write_json(applied_path, state)
+                for p in batch:
+                    os.unlink(p)
+                n_done += len(batch)
+                batch, batch_bytes = [], 0
+        if batch:
+            os.fsync(rfd)
+            state["last_time"] = time.time()
             write_json(applied_path, state)
-            os.unlink(path)
-            n_done += 1
+            for p in batch:
+                os.unlink(p)
+            n_done += len(batch)
     finally:
         os.close(rfd)
     return n_done
