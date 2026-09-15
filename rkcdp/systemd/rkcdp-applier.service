@@ -5,7 +5,7 @@ Wants=remote-fs.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 /opt/rkcdp/rkcdp-applier.py
+ExecStart=/opt/rkcdp/rkcdp-applier
 Nice=10
 IOSchedulingClass=idle
 Restart=always

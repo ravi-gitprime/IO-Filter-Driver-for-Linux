@@ -12,8 +12,18 @@ apt-get install -y -q kpartx dmsetup >/dev/null
 install -d /lib/modules/$(uname -r)/extra /opt/rkcdp /etc/rkcdp
 install -m 644 "$KO" /lib/modules/$(uname -r)/extra/dm-cdp.ko
 depmod -a
-install -m 755 "$HERE"/rkcdpd.py "$HERE"/rkcdp-applier.py "$HERE"/rkcdp-rebuild.py "$HERE"/rkcdp-firstboot.sh /opt/rkcdp/
-install -m 644 "$HERE"/dmcdp.py /opt/rkcdp/
+if [ -x "$HERE/dist/rkcdpd" ]; then
+    # compiled (Nuitka) binaries
+    install -m 755 "$HERE"/dist/rkcdpd "$HERE"/dist/rkcdp-applier "$HERE"/dist/rkcdp-rebuild /opt/rkcdp/
+    rm -f /opt/rkcdp/*.py
+else
+    # source fallback: same names, no .py, executable via shebang
+    install -m 755 "$HERE"/rkcdpd.py /opt/rkcdp/rkcdpd
+    install -m 755 "$HERE"/rkcdp-applier.py /opt/rkcdp/rkcdp-applier
+    install -m 755 "$HERE"/rkcdp-rebuild.py /opt/rkcdp/rkcdp-rebuild
+    install -m 644 "$HERE"/dmcdp.py /opt/rkcdp/
+fi
+install -m 755 "$HERE"/rkcdp-firstboot.sh /opt/rkcdp/
 install -m 644 "$HERE"/systemd/*.service /etc/systemd/system/
 install -m 755 "$HERE"/initramfs/hook /etc/initramfs-tools/hooks/rkcdp
 install -m 755 "$HERE"/initramfs/local-top /etc/initramfs-tools/scripts/local-top/rkcdp

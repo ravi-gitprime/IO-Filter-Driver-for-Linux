@@ -18,7 +18,7 @@ import subprocess
 import time
 
 JOURNAL = os.environ.get("RKCDP_JOURNAL", "/replication/_kvmdr/rkcdp")
-REBUILD_BIN = os.environ.get("RKCDP_REBUILD", "/opt/rkcdp/rkcdp-rebuild.py")
+REBUILD_BIN = os.environ.get("RKCDP_REBUILD", "/opt/rkcdp/rkcdp-rebuild")
 PROGRESS_DIR = "/run/rkcdp"
 STALE_SEC = 60
 
@@ -124,7 +124,7 @@ def init(app, get_db, require_admin):
 
         os.makedirs(PROGRESS_DIR, exist_ok=True)
         pfile = os.path.join(PROGRESS_DIR, "%s.json" % node)
-        cmd = ["python3", REBUILD_BIN, "--node", node, "--host", h["ip"],
+        cmd = [REBUILD_BIN, "--node", node, "--host", h["ip"],
                "--user", h.get("ssh_user") or "root", "--journal", JOURNAL,
                "--progress", pfile]
         if payload.get("vmid"):
