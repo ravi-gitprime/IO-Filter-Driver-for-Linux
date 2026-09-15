@@ -90,6 +90,22 @@ def process_node(node_dir):
         return 0
     if os.path.exists(os.path.join(node_dir, ".rebuild.lock")):
         return 0  # rkcdp-rebuild is copying the replica; leave it untouched
+    # one applier per node dir (not per journal): each manager applies its
+    # peer's cycles; a second applier simply skips a node someone else holds
+    lockf = open(os.path.join(node_dir, ".applier.lock"), "w")
+    try:
+        fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lockf.close()
+        return 0
+    try:
+        return _process_node_locked(node_dir, replica, cycles)
+    finally:
+        fcntl.flock(lockf, fcntl.LOCK_UN)
+        lockf.close()
+
+
+def _process_node_locked(node_dir, replica, cycles):
     applied_path = os.path.join(node_dir, "applied.json")
     state = {"last_seq": None, "last_time": None, "cycles": 0, "bytes": 0}
     if os.path.exists(applied_path):
@@ -141,23 +157,7 @@ def main():
     signal.signal(signal.SIGINT, on_sig)
     me = socket.gethostname()
 
-    # single active applier per journal; others wait (standby) until the
-    # holder exits or dies, then take over automatically
-    lockf = open(os.path.join(args.journal, ".applier.lock"), "w")
-    waited = False
-    while not stop:
-        try:
-            fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break
-        except OSError:
-            if not waited:
-                log("standby: another applier is active on %s" % args.journal)
-                waited = True
-            time.sleep(5)
-    if stop:
-        return
-
-    log("active: watching %s" % args.journal)
+    log("watching %s (applying every node except %s)" % (args.journal, me))
     while not stop:
         total = 0
         for node in sorted(os.listdir(args.journal)):
