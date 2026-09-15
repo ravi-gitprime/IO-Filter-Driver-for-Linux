@@ -1,24 +1,29 @@
 // ─── Manager Recovery (rkcdp) ───────────────────────────────────────────────
-// Settings → Manager Recovery. Shows every node protected by rkcdpd (from
-// /replication/_kvmdr/rkcdp/<node>/) and rebuilds a dead one from its
-// replica.raw on a Proxmox host. Rebuilt nodes always come up STANDBY.
+// Settings → Manager Recovery. One row per manager: status, replica age or
+// first-sync progress, replica size, Rebuild. Rebuilt nodes come up STANDBY.
 
 function ManagerRecoveryTab({ showToast }) {
   const [nodes, setNodes]   = useState([])
   const [hosts, setHosts]   = useState([])
+  const [roles, setRoles]   = useState({})
   const [loading, setLoading] = useState(true)
-  const [form, setForm]     = useState(null)   // { node, host_id, vmid, storage, bridge, force }
+  const [form, setForm]     = useState(null)
   const [busy, setBusy]     = useState(false)
   const [apiMissing, setApiMissing] = useState(false)
 
   const load = async () => {
     try {
-      const [n, h] = await Promise.all([axios.get('/api/rkcdp/nodes'), axios.get('/api/hosts')])
-      // A missing endpoint falls through to the UI catch-all and returns HTML,
-      // not JSON — guard so the page degrades to a message instead of crashing.
+      const [n, h, m] = await Promise.all([
+        axios.get('/api/rkcdp/nodes'), axios.get('/api/hosts'),
+        axios.get('/api/manager_status').catch(() => ({ data: null })),
+      ])
       setApiMissing(!Array.isArray(n.data))
       setNodes(Array.isArray(n.data) ? n.data : [])
       setHosts(Array.isArray(h.data) ? h.data.filter(x => !x.hv_type || /prox|pve/i.test(x.hv_type)) : [])
+      const r = {}
+      const ms = m.data
+      if (ms && Array.isArray(ms.nodes)) ms.nodes.forEach(x => { if (x.hostname) r[x.hostname] = (x.role || x.state || '').toLowerCase() })
+      setRoles(r)
     } catch (e) {
       showToast?.(`Could not load recovery state: ${e.message}`, 'error')
     } finally {
@@ -31,20 +36,26 @@ function ManagerRecoveryTab({ showToast }) {
     return () => clearInterval(t)
   }, [])
 
-  const stateBadge = (s) => {
-    const m = {
-      cdp:         { label: 'CDP',         color: 'var(--green)' },
-      syncing:     { label: 'Syncing',     color: 'var(--blue)' },
-      paused:      { label: 'Paused',      color: 'var(--yellow, #eab308)' },
-      bitmap:      { label: 'Bitmap',      color: 'var(--yellow, #eab308)' },
-      stale:       { label: 'Stale',       color: 'var(--red)' },
-      unprotected: { label: 'Unprotected', color: 'var(--text3)' },
-    }[s] || { label: s, color: 'var(--text3)' }
-    return <span style={{ color: m.color, fontWeight: 600 }}>{m.label}</span>
-  }
   const gb = (b) => b == null ? '—' : `${(b / 1073741824).toFixed(1)} GB`
-  const ago = (t) => t ? `${Math.max(0, Math.round(Date.now() / 1000 - t))}s ago` : '—'
-  const when = (t) => t ? new Date(t * 1000).toLocaleTimeString() : '—'
+  const gbInt = (b) => b == null ? '—' : `${Math.round(b / 1073741824)} GB`
+  const ago = (t) => {
+    if (!t) return '—'
+    const s = Math.max(0, Math.round(Date.now() / 1000 - t))
+    if (s < 60) return `${s} s ago`
+    if (s < 3600) return `${Math.round(s / 60)} min ago`
+    return `${new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+  }
+
+  const statusOf = (n) => {
+    switch (n.state) {
+      case 'cdp':         return { text: 'Protected',      color: 'var(--green)' }
+      case 'syncing':     return { text: 'First sync',     color: 'var(--blue)' }
+      case 'bitmap':      return { text: 'Catching up',    color: 'var(--yellow, #eab308)' }
+      case 'paused':      return { text: 'Rebuilding',     color: 'var(--blue)' }
+      case 'stale':       return { text: 'Not responding', color: 'var(--red)' }
+      default:            return { text: 'Not protected',  color: 'var(--text3)' }
+    }
+  }
 
   const openRebuild = (n) => setForm({
     node: n.node, host_id: hosts[0]?.host_id ?? '', vmid: '', storage: 'local-lvm',
@@ -54,7 +65,7 @@ function ManagerRecoveryTab({ showToast }) {
   const submit = async () => {
     if (!form.host_id) { showToast?.('Pick a host', 'error'); return }
     const host = hosts.find(h => String(h.host_id) === String(form.host_id))
-    if (!confirm(`Rebuild ${form.node} on ${host?.hostname || form.host_id} from its latest replica?\n\nThe node will boot as STANDBY. Make sure the old VM is stopped/removed first (same MAC and IP).`)) return
+    if (!confirm(`Rebuild ${form.node} on ${host?.hostname || form.host_id} from its replica?\n\nIt will boot as STANDBY. Make sure the old VM is stopped or removed first (same MAC and IP).`)) return
     setBusy(true)
     try {
       await axios.post('/api/rkcdp/rebuild', {
@@ -73,102 +84,86 @@ function ManagerRecoveryTab({ showToast }) {
     }
   }
 
-  const th = { textAlign: 'left', fontSize: 11, color: 'var(--text2)', padding: '6px 8px', borderBottom: '1px solid var(--border2)' }
-  const td = { fontSize: 12, padding: '8px 8px', borderBottom: '1px solid var(--border)', verticalAlign: 'top' }
+  const row = { display: 'grid', gridTemplateColumns: 'minmax(0,1.1fr) minmax(0,1.5fr) 110px auto', gap: 16, alignItems: 'center', padding: '14px 0', borderTop: '1px solid var(--border)' }
 
   return (
-    <>
-      <Section title="Manager Recovery"
-        right={<button style={btnStyle()} onClick={load}>Refresh</button>}>
-        <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 10 }}>
-          Each manager node writes every disk write straight into its replica at
-          <code>/replication/_kvmdr/rkcdp/&lt;node&gt;/replica.raw</code>. Rebuild recreates a dead node from
-          that replica as a new VM. It boots as STANDBY and heals from the active manager.
-        </div>
-        {apiMissing && <div style={{ fontSize: 12, color: 'var(--red)', marginBottom: 8 }}>
-          /api/rkcdp/nodes is not served by this manager's API — the api_rkcdp module is not loaded (check <code>journalctl -u kvmdr-api</code>).
-        </div>}
-        {loading ? <div style={{ fontSize: 12, color: 'var(--text3)' }}>Loading…</div> :
-         nodes.length === 0 ? <div style={{ fontSize: 12, color: 'var(--text3)' }}>No protected nodes found. Is rkcdpd running and the replication share mounted?</div> :
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead><tr>
-            <th style={th}>Node</th><th style={th}>Protection</th><th style={th}>Replica</th>
-            <th style={th}>Lag</th><th style={th}>Size</th><th style={th}></th>
-          </tr></thead>
-          <tbody>
-            {nodes.map(n => {
-              const lag = (n.seq_next != null && n.applied_seq != null) ? Math.max(0, n.seq_next - 1 - n.applied_seq) : null
-              return (
-                <Fragment key={n.node}>
-                  <tr>
-                    <td style={td}>
-                      <div style={{ fontWeight: 600 }}>{n.node}</div>
-                      <div style={{ fontSize: 10, color: 'var(--text3)' }}>{(n.ips || []).join(' ')} · {n.device || ''}</div>
-                    </td>
-                    <td style={td}>
-                      {stateBadge(n.state)}
-                      <div style={{ fontSize: 10, color: 'var(--text3)' }}>
-                        {n.state === 'stale' ? `last seen ${ago(n.status_age_sec ? Date.now()/1000 - n.status_age_sec : null)}` :
-                         n.status_age_sec != null ? `heartbeat ${n.status_age_sec}s ago` : 'no status'}
-                        {n.overflows ? ` · ${n.overflows} overflows` : ''}
-                      </div>
-                    </td>
-                    <td style={td}>
-                      {n.state === 'syncing' && n.base_copy ? (
-                        <div>
-                          <div>base copy {Math.round(100 * n.base_copy.done / Math.max(1, n.base_copy.total))}% · {n.base_copy.mbps} MB/s
-                            {n.base_copy.eta_sec != null ? ` · ${Math.ceil(n.base_copy.eta_sec / 60)} min left` : ''}</div>
-                          <div style={{ height: 4, background: 'var(--bg3)', borderRadius: 2, marginTop: 4, width: 180 }}>
-                            <div style={{ height: 4, width: `${Math.round(100 * n.base_copy.done / Math.max(1, n.base_copy.total))}%`, background: 'var(--blue)', borderRadius: 2 }} />
-                          </div>
-                        </div>
-                      ) : <div>current as of {when(n.applied_time)}</div>}
-                      <div style={{ fontSize: 10, color: 'var(--text3)' }}>seq {n.applied_seq ?? '—'}{n.pending_bytes ? ` · ${Math.round(n.pending_bytes / 1048576)} MB parked` : ''}</div>
-                    </td>
-                    <td style={td}>{lag == null ? '—' : lag === 0 ? <span style={{ color: 'var(--green)' }}>0</span> : `${lag} writes`}</td>
-                    <td style={td}>{gb(n.replica_used_bytes)}<div style={{ fontSize: 10, color: 'var(--text3)' }}>of {gb(n.replica_bytes)}</div></td>
-                    <td style={{ ...td, textAlign: 'right' }}>
-                      {n.rebuilding
-                        ? <span style={{ fontSize: 11, color: 'var(--blue)' }}>rebuilding…</span>
-                        : <button style={btnStyle(n.state === 'stale' ? 'red' : undefined)}
-                                  disabled={n.state === 'unprotected' || n.state === 'syncing'}
-                                  onClick={() => openRebuild(n)}>Rebuild</button>}
-                    </td>
-                  </tr>
-                  {n.rebuild && (n.rebuilding || n.rebuild.state === 'failed' || (n.rebuild.finished && Date.now()/1000 - n.rebuild.finished < 600)) && (
-                    <tr><td colSpan={6} style={{ ...td, background: 'var(--bg2)' }}>
-                      <RebuildProgress p={n.rebuild} />
-                    </td></tr>
-                  )}
-                  {form && form.node === n.node && (
-                    <tr><td colSpan={6} style={{ ...td, background: 'var(--bg2)' }}>
-                      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 10 }}>
-                        <Field label="Proxmox host">
-                          <Sel value={form.host_id} onChange={v => setForm(f => ({ ...f, host_id: v }))}
-                               options={hosts.map(h => ({ value: h.host_id, label: `${h.hostname} (${h.ip})` }))} />
-                        </Field>
-                        <Field label="VMID" hint="blank = next free 9100+">
-                          <Inp value={form.vmid} onChange={v => setForm(f => ({ ...f, vmid: v }))} placeholder="auto" />
-                        </Field>
-                        <Field label="Storage"><Inp value={form.storage} onChange={v => setForm(f => ({ ...f, storage: v }))} /></Field>
-                        <Field label="Bridge"><Inp value={form.bridge} onChange={v => setForm(f => ({ ...f, bridge: v }))} /></Field>
-                      </div>
-                      {form.force && <div style={{ fontSize: 11, color: 'var(--yellow, #eab308)', marginBottom: 8 }}>
-                        This node still reports alive. Rebuilding creates a second VM with the same MAC/IP — stop the old one first.
-                      </div>}
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <button style={btnStyle('red')} disabled={busy} onClick={submit}>{busy ? 'Starting…' : 'Rebuild as STANDBY'}</button>
-                        <button style={btnStyle()} onClick={() => setForm(null)}>Cancel</button>
-                      </div>
-                    </td></tr>
-                  )}
-                </Fragment>
-              )
-            })}
-          </tbody>
-        </table>}
-      </Section>
-    </>
+    <Section title="Manager Recovery">
+      {apiMissing && <div style={{ fontSize: 12, color: 'var(--red)', marginBottom: 8 }}>
+        This manager's API does not serve /api/rkcdp — the api_rkcdp module is not loaded.
+      </div>}
+      {loading ? <div style={{ fontSize: 12, color: 'var(--text3)' }}>Loading…</div> :
+       nodes.length === 0 ? <div style={{ fontSize: 12, color: 'var(--text3)' }}>No protected managers found.</div> :
+       nodes.map(n => {
+        const st = statusOf(n)
+        const dead = n.state === 'stale'
+        const bc = n.base_copy
+        const pct = bc ? Math.round(100 * bc.done / Math.max(1, bc.total)) : 0
+        return (
+          <Fragment key={n.node}>
+            <div style={row}>
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 600 }}>{n.node} <span style={{ fontSize: 12, color: 'var(--text3)', fontWeight: 400 }}>{roles[n.node] || ''}</span></div>
+                <div style={{ fontSize: 13, color: st.color, marginTop: 2 }}>{st.text}</div>
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--text2)' }}>
+                {n.state === 'syncing' && bc ? (
+                  <div>
+                    <div>{pct}%{bc.eta_sec != null ? ` · about ${Math.max(1, Math.ceil(bc.eta_sec / 60))} min left` : ''}</div>
+                    <div style={{ height: 4, background: 'var(--bg3)', borderRadius: 2, marginTop: 6, maxWidth: 240 }}>
+                      <div style={{ height: 4, width: `${pct}%`, background: 'var(--blue)', borderRadius: 2 }} />
+                    </div>
+                  </div>
+                ) : n.rebuilding && n.rebuild ? (
+                  <div><RebuildProgress p={n.rebuild} /></div>
+                ) : dead ? (
+                  <div>Replica as of {ago(n.applied_time)}</div>
+                ) : n.state === 'unprotected' ? (
+                  <div>No replica yet</div>
+                ) : (
+                  <div>Replica up to date · {ago(n.applied_time)}</div>
+                )}
+              </div>
+              <div style={{ fontSize: 13 }}>
+                <span style={{ fontWeight: 600 }}>{gb(n.replica_used_bytes)}</span>
+                <div style={{ fontSize: 12, color: 'var(--text3)' }}>{gbInt(n.replica_bytes)} disk</div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                {n.rebuilding
+                  ? <span style={{ fontSize: 12, color: 'var(--blue)' }}>rebuilding…</span>
+                  : <button style={btnStyle(dead ? 'red' : undefined)}
+                            disabled={n.state === 'unprotected' || n.state === 'syncing'}
+                            onClick={() => openRebuild(n)}>Rebuild</button>}
+              </div>
+            </div>
+            {n.rebuild && !n.rebuilding && (n.rebuild.state === 'failed' || (n.rebuild.finished && Date.now()/1000 - n.rebuild.finished < 600)) && (
+              <div style={{ padding: '8px 0 12px' }}><RebuildProgress p={n.rebuild} /></div>
+            )}
+            {form && form.node === n.node && (
+              <div style={{ padding: '8px 0 14px', borderTop: '1px solid var(--border)' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 10 }}>
+                  <Field label="Proxmox host">
+                    <Sel value={form.host_id} onChange={v => setForm(f => ({ ...f, host_id: v }))}
+                         options={hosts.map(h => ({ value: h.host_id, label: `${h.hostname} (${h.ip})` }))} />
+                  </Field>
+                  <Field label="VMID" hint="blank = next free 9100+">
+                    <Inp value={form.vmid} onChange={v => setForm(f => ({ ...f, vmid: v }))} placeholder="auto" />
+                  </Field>
+                  <Field label="Storage"><Inp value={form.storage} onChange={v => setForm(f => ({ ...f, storage: v }))} /></Field>
+                  <Field label="Bridge"><Inp value={form.bridge} onChange={v => setForm(f => ({ ...f, bridge: v }))} /></Field>
+                </div>
+                {form.force && <div style={{ fontSize: 11, color: 'var(--yellow, #eab308)', marginBottom: 8 }}>
+                  This node still reports alive. Rebuilding creates a second VM with the same MAC/IP — stop the old one first.
+                </div>}
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button style={btnStyle('red')} disabled={busy} onClick={submit}>{busy ? 'Starting…' : 'Rebuild as STANDBY'}</button>
+                  <button style={btnStyle()} onClick={() => setForm(null)}>Cancel</button>
+                </div>
+              </div>
+            )}
+          </Fragment>
+        )
+      })}
+    </Section>
   )
 }
 
