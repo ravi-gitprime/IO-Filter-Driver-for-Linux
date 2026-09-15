@@ -43,9 +43,14 @@ def _nodes():
         manifest = _load(os.path.join(d, "manifest.json"), {})
         status = _load(os.path.join(d, "status.json"), {})
         node = _load(os.path.join(d, "node.json"), {})
+        seed = _load(os.path.join(d, "seed.json"), {})
         now = time.time()
         age = now - status.get("time", 0) if status else None
-        if age is not None and age <= STALE_SEC and status.get("state") == "SYNCING":
+        if age is not None and age <= STALE_SEC and seed.get("phase") in ("locate", "seed", "replica", "drain"):
+            state = "seeding"
+        elif age is not None and age <= STALE_SEC and status.get("state") == "WAITING":
+            state = "waiting"
+        elif age is not None and age <= STALE_SEC and status.get("state") == "SYNCING":
             state = "syncing"
         elif "base_end_seq" not in manifest:    # 0 is a valid value
             state = "unprotected"
@@ -75,6 +80,8 @@ def _nodes():
             "device": manifest.get("device"),
             "ips": node.get("ips"), "mem_mb": node.get("mem_mb"), "cpus": node.get("cpus"),
             "base_copy": status.get("base_copy"),
+            "seed": {"phase": seed.get("phase"), "percent": seed.get("percent"), "msg": seed.get("msg")} if seed else None,
+            "seed_present": os.path.exists(os.path.join(d, "seed.raw")),
             "rebuilding": bool(prog and prog.get("state") == "running"),
             "rebuild": prog,
         })

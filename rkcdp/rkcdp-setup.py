@@ -29,6 +29,7 @@ FILES = [
     ("dm-cdp.ko",                  f"/lib/modules/{KVER}/extra/dm-cdp.ko",                 0o644),
     ("rkcdpd",                     "/opt/rkcdp/rkcdpd",                                     0o755),
     ("rkcdp-rebuild",              "/opt/rkcdp/rkcdp-rebuild",                              0o755),
+    ("rkcdp-seed",                 "/opt/rkcdp/rkcdp-seed",                                 0o755),
     ("rkcdp-firstboot.sh",         "/opt/rkcdp/rkcdp-firstboot.sh",                         0o755),
     ("rkcdpd.service",             "/etc/systemd/system/rkcdpd.service",                    0o644),
     ("rkcdp-firstboot.service",    "/etc/systemd/system/rkcdp-firstboot.service",           0o644),

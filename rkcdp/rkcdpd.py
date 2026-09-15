@@ -127,6 +127,14 @@ def write_json(path, obj):
     os.replace(tmp, path)
 
 
+def boot_id():
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
 def load_json(path, default=None):
     if os.path.exists(path):
         with open(path) as f:
@@ -216,7 +224,9 @@ class Daemon:
             "node": conf["node"], "device": conf["device"], "dm_name": conf["dm_name"],
             "gen": 1, "abi": dmcdp.ABI_VERSION, "size": self.size}
         write_json(self.manifest_path, self.manifest)
+        self.seed_required = bool(conf.get("seed_required")) and "base_end_seq" not in self.manifest
         self.replica = Replica(os.path.join(self.root, "replica.raw"), self.size)
+        self.boot_id = boot_id()
 
         self.lock = threading.Lock()      # guards copying/deferred and each replica write
         self.copying = None               # (start_off, end_off) chunk a copy thread is on
@@ -375,10 +385,34 @@ class Daemon:
         if n:
             log("applied %d parked records" % n)
 
+    # ---------------------------------------------------------------- seed
+    def check_seed(self):
+        """rkcdp-seed writes manifest.seeded = {boot_id, time} once replica.raw
+        holds a copy of the disk taken during this boot. Everything written
+        since boot is in the kernel bitmap, so one recovery brings the replica
+        current. A seed from another boot is unusable (bitmap gone): base copy."""
+        m = load_json(self.manifest_path) or {}
+        seed = m.get("seeded")
+        if not seed:
+            return
+        self.manifest = m
+        self.seed_required = False
+        if seed.get("boot_id") == self.boot_id:
+            log("seed adopted (boot %s); draining changes since boot from the bitmap" % self.boot_id[:8])
+            self.recovery_queue.append(-1)          # sentinel: not a ring gap, a seed drain
+            self.manifest.update({"base_end_seq": 0, "base_time": seed.get("time", time.time())})
+            write_json(self.manifest_path, self.manifest)
+        else:
+            log("seed is from a different boot; falling back to a base copy")
+            self.base_thread = threading.Thread(target=self.base_copy, daemon=False)
+            self.base_thread.start()
+
     # ---------------------------------------------------------------- status
     def write_status(self):
         st = dmcdp.status(self.cdp_fd)
-        if self.base_progress:
+        if self.seed_required:
+            state = "WAITING"          # replica must be seeded by setup first
+        elif self.base_progress:
             state = "SYNCING"
         elif self.recovery_active() or self.recovery_queue:
             state = "RECOVERING"
@@ -390,7 +424,7 @@ class Daemon:
             state = "CDP"
         rec = load_json(self.recovery_path)
         write_json(self.status_path, {
-            "node": self.conf["node"], "state": state, "time": time.time(),
+            "node": self.conf["node"], "state": state, "time": time.time(), "boot_id": self.boot_id,
             "last_seq": self.last_seq, "last_time": self.last_time,
             "seq_next": st["seq_next"], "ring_used": st["ring_used"], "ring_size": st["ring_size"],
             "overflows": st["overflows"], "records": self.records, "bytes": self.bytes,
@@ -426,9 +460,11 @@ class Daemon:
             log("resuming interrupted bitmap recovery (gap at seq %s)" % prev.get("gap_seq"))
             self.recovery_thread = threading.Thread(target=self.recover, args=(prev,), daemon=False)
             self.recovery_thread.start()
-        if "base_end_seq" not in self.manifest:
+        if "base_end_seq" not in self.manifest and not self.seed_required:
             self.base_thread = threading.Thread(target=self.base_copy, daemon=False)
             self.base_thread.start()
+        if self.seed_required:
+            log("waiting for seed (setup stage seed_mgr_replica); no base copy")
 
         poll = select.poll()
         poll.register(self.cdp_fd, select.POLLIN)
@@ -448,6 +484,10 @@ class Daemon:
                 continue
             if data:
                 pending = self.consume(pending + data)
+
+            # seeded by setup? adopt it: replica = disk at boot + bitmap since boot
+            if self.seed_required:
+                self.check_seed()
 
             # a queued recovery starts once the base copy is done and no other recovery runs
             if self.recovery_queue and not self.recovery_active() and not self.base_progress:

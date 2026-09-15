@@ -55,6 +55,8 @@ function ManagerRecoveryTab({ showToast }) {
     switch (n.state) {
       case 'cdp':         return { text: 'Protected',      color: 'var(--green)' }
       case 'syncing':     return { text: 'First sync',     color: 'var(--blue)' }
+      case 'seeding':     return { text: 'Seeding',        color: 'var(--blue)' }
+      case 'waiting':     return { text: 'Not seeded',     color: 'var(--yellow, #eab308)' }
       case 'bitmap':      return { text: 'Catching up',    color: 'var(--yellow, #eab308)' }
       case 'paused':      return { text: 'Rebuilding',     color: 'var(--blue)' }
       case 'stale':       return { text: 'Not responding', color: 'var(--red)' }
@@ -111,7 +113,16 @@ function ManagerRecoveryTab({ showToast }) {
                 <div style={{ fontSize: 13, color: st.color, marginTop: 2 }}>{st.text}</div>
               </div>
               <div style={{ fontSize: 13, color: 'var(--text2)' }}>
-                {n.state === 'syncing' && bc ? (
+                {n.state === 'seeding' && n.seed ? (
+                  <div>
+                    <div>{n.seed.phase === 'seed' && n.seed.percent != null ? `copying disk ${n.seed.percent}%` : n.seed.phase === 'drain' ? 'draining changes since boot' : n.seed.msg || n.seed.phase}</div>
+                    {n.seed.percent != null && <div style={{ height: 4, background: 'var(--bg3)', borderRadius: 2, marginTop: 6, maxWidth: 240 }}>
+                      <div style={{ height: 4, width: `${n.seed.percent}%`, background: 'var(--blue)', borderRadius: 2 }} />
+                    </div>}
+                  </div>
+                ) : n.state === 'waiting' ? (
+                  <div>Waiting for setup to seed the replica</div>
+                ) : n.state === 'syncing' && bc ? (
                   <div>
                     <div>{pct}%{bc.eta_sec != null ? ` · about ${Math.max(1, Math.ceil(bc.eta_sec / 60))} min left` : ''}</div>
                     <div style={{ height: 4, background: 'var(--bg3)', borderRadius: 2, marginTop: 6, maxWidth: 240 }}>
@@ -136,7 +147,7 @@ function ManagerRecoveryTab({ showToast }) {
                 {n.rebuilding
                   ? <span style={{ fontSize: 12, color: 'var(--blue)' }}>rebuilding…</span>
                   : <button style={btnStyle(dead ? 'red' : undefined)}
-                            disabled={n.state === 'unprotected' || n.state === 'syncing'}
+                            disabled={n.state === 'unprotected' || n.state === 'syncing' || n.state === 'seeding' || n.state === 'waiting'}
                             onClick={() => openRebuild(n)}>Rebuild</button>}
               </div>
             </div>

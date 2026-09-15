@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 KO=${KO:-../dm-cdp.ko}
 [ -f "$KO" ] || { echo "dm-cdp.ko not found at $KO (run make in the repo root)"; exit 1; }
 mkdir -p dist
-for prog in rkcdpd rkcdp-rebuild; do
+for prog in rkcdpd rkcdp-rebuild rkcdp-seed; do
     echo "== $prog"
     ionice -c3 nice -n19 python3 -m nuitka --onefile --output-dir=dist --output-filename=$prog \
         --include-module=dmcdp --assume-yes-for-downloads --remove-output "$prog.py"
@@ -15,7 +15,7 @@ done
 echo "== assets"
 rm -rf assets && mkdir -p assets
 cp "$KO" assets/dm-cdp.ko
-cp dist/rkcdpd dist/rkcdp-rebuild rkcdp-firstboot.sh assets/
+cp dist/rkcdpd dist/rkcdp-rebuild dist/rkcdp-seed rkcdp-firstboot.sh assets/
 cp systemd/rkcdpd.service systemd/rkcdp-firstboot.service assets/
 cp initramfs/hook initramfs/local-top udev/99-rkcdp.rules assets/
 echo "== rkcdp-setup"
