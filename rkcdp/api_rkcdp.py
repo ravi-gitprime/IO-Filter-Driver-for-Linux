@@ -41,7 +41,6 @@ def _nodes():
             continue
         manifest = _load(os.path.join(d, "manifest.json"), {})
         status = _load(os.path.join(d, "status.json"), {})
-        applied = _load(os.path.join(d, "applied.json"), {})
         node = _load(os.path.join(d, "node.json"), {})
         now = time.time()
         age = now - status.get("time", 0) if status else None
@@ -51,14 +50,12 @@ def _nodes():
             state = "unprotected"
         elif age is None or age > STALE_SEC:
             state = "stale"
-        elif status.get("state") == "BITMAP":
+        elif status.get("state") in ("BITMAP", "RECOVERING"):
             state = "bitmap"
+        elif status.get("state") == "PAUSED":
+            state = "paused"
         else:
             state = "cdp"
-        pending = 0
-        cyc = os.path.join(d, "cycles")
-        if os.path.isdir(cyc):
-            pending = len([n for n in os.listdir(cyc) if n.endswith(".bin")])
         replica = os.path.join(d, "replica.raw")
         rstat = os.stat(replica) if os.path.exists(replica) else None
         prog = _load(os.path.join(PROGRESS_DIR, "%s.json" % name))
@@ -69,9 +66,9 @@ def _nodes():
             "last_seq": status.get("last_seq"),
             "seq_next": status.get("seq_next"),
             "overflows": status.get("overflows"),
-            "applied_seq": applied.get("last_seq", manifest.get("base_end_seq")),
-            "applied_time": applied.get("last_time") or manifest.get("base_time"),
-            "pending_cycles": pending,
+            "applied_seq": status.get("last_seq"),
+            "applied_time": status.get("last_time") or manifest.get("base_time"),
+            "pending_bytes": status.get("pending_bytes", 0),
             "replica_bytes": rstat.st_size if rstat else None,
             "replica_used_bytes": rstat.st_blocks * 512 if rstat else None,
             "device": manifest.get("device"),

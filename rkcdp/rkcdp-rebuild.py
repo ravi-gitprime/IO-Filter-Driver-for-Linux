@@ -13,7 +13,7 @@ rkcdp-rebuild - rebuild a dead node from its replica.raw on a Proxmox host.
 
 Steps (each written to --progress):
   1 check     manifest/applied present, node not alive (unless --force)
-  2 quiesce   lock the node dir; wait for applier to be idle
+  2 quiesce   lock the node dir; a live rkcdpd parks its writes
   3 copy      replica.raw -> rebuild/<node>-<ts>.raw (sparse)
   4 mark      touch /etc/kvmdr/rkcdp-rebuilt-standby inside the copy
   5 create    qm create + importdisk + boot on the host
@@ -144,7 +144,7 @@ def main():
         # 1 check
         pg.step(1, "checking replica for %s" % a.node)
         manifest = load_json(os.path.join(nd, "manifest.json"))
-        applied = load_json(os.path.join(nd, "applied.json")) if os.path.exists(os.path.join(nd, "applied.json")) else {}
+        status = load_json(st_path0) if os.path.exists(st_path0 := os.path.join(nd, "status.json")) else {}
         node = load_json(os.path.join(nd, "node.json")) if os.path.exists(os.path.join(nd, "node.json")) else {}
         replica = os.path.join(nd, "replica.raw")
         if not os.path.exists(replica):
@@ -157,20 +157,17 @@ def main():
             if age < 60 and not a.force:
                 raise RuntimeError("%s reported alive %.0fs ago; use --force to rebuild anyway" % (a.node, age))
 
-        # 2 quiesce
-        pg.step(2, "quiescing applier")
+        # 2 quiesce: lock the dir; a live rkcdpd parks its writes and reports PAUSED
+        pg.step(2, "quiescing replica writes")
         with open(lock, "w") as f:
             f.write(str(os.getpid()))
-        cyc = os.path.join(nd, "cycles")
-        for _ in range(120):
-            pending = [n for n in os.listdir(cyc) if n.endswith(".bin")] if os.path.isdir(cyc) else []
-            if not pending:
+        for _ in range(30):
+            st = load_json(st_path0) if os.path.exists(st_path0) else {}
+            if st.get("state") == "PAUSED" or time.time() - st.get("time", 0) > 30:
                 break
             time.sleep(1)
-        else:
-            raise RuntimeError("applier did not drain cycles within 120s (is rkcdp-applier running?)")
-        last_seq = applied.get("last_seq")
-        last_time = applied.get("last_time")
+        last_seq = status.get("last_seq")
+        last_time = status.get("last_time")
 
         # 3 copy
         ts = time.strftime("%Y%m%d-%H%M%S")

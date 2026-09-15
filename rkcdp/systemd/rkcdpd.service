@@ -1,15 +1,14 @@
 [Unit]
-Description=rkcdp - ship disk writes to the replica journal
+Description=rkcdp - keep this node's replica.raw current
 After=network-online.target remote-fs.target
 Wants=network-online.target remote-fs.target
 
 [Service]
 Type=simple
 ExecStart=/opt/rkcdp/rkcdpd
-Nice=10
-IOSchedulingClass=idle
 Restart=always
 RestartSec=5
+TimeoutStopSec=90
 
 [Install]
 WantedBy=multi-user.target

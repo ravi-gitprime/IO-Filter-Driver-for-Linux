@@ -1,9 +1,8 @@
 # Manager recovery (rkcdp)
 
-Each KVMDR manager protects its own disk: `dm-cdp` captures every write,
-`rkcdpd` ships them to `/replication/_kvmdr/rkcdp/<node>/`, and the peer's
-`rkcdp-applier` folds them into `replica.raw` — an always-current, bootable
-whole-disk image. There is no point-in-time history: the replica is the
+Each KVMDR manager protects its own disk: `dm-cdp` captures every write and
+`rkcdpd` writes it straight into `/replication/_kvmdr/rkcdp/<node>/replica.raw`
+— an always-current, bootable whole-disk image. No intermediary. There is no point-in-time history: the replica is the
 node as of a few seconds ago.
 
 ## One manager down (normal case) — UI
@@ -38,9 +37,9 @@ reporting alive), `--keep-copy`.
       manifest.json   device, base_end_seq, gen
       node.json       cpus, mem, MACs, IPs, firmware   (hourly)
       status.json     CDP/BITMAP, seq, ring, overflows (every second)
-      applied.json    last seq folded into the replica
-      replica.raw     sparse whole-disk image
-      cycles/         shipped, not-yet-applied writes (normally empty)
+      replica.raw     sparse whole-disk image, written directly by rkcdpd
+      pending.bin     writes parked during a bitmap recovery or rebuild (transient)
+      recovery.json   bitmap recovery in progress (transient)
     /replication/_kvmdr/rkcdp/rebuild/   temporary copies during a rebuild
 
 ## States

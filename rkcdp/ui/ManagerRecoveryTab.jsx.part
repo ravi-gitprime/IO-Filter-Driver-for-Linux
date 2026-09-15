@@ -35,6 +35,7 @@ function ManagerRecoveryTab({ showToast }) {
     const m = {
       cdp:         { label: 'CDP',         color: 'var(--green)' },
       syncing:     { label: 'Syncing',     color: 'var(--blue)' },
+      paused:      { label: 'Paused',      color: 'var(--yellow, #eab308)' },
       bitmap:      { label: 'Bitmap',      color: 'var(--yellow, #eab308)' },
       stale:       { label: 'Stale',       color: 'var(--red)' },
       unprotected: { label: 'Unprotected', color: 'var(--text3)' },
@@ -80,9 +81,9 @@ function ManagerRecoveryTab({ showToast }) {
       <Section title="Manager Recovery"
         right={<button style={btnStyle()} onClick={load}>Refresh</button>}>
         <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 10 }}>
-          Each manager node ships every disk write to <code>/replication/_kvmdr/rkcdp/&lt;node&gt;/</code>;
-          the peer folds them into an always-current replica. Rebuild recreates a dead node from that
-          replica as a new VM. It boots as STANDBY and heals from the active manager.
+          Each manager node writes every disk write straight into its replica at
+          <code>/replication/_kvmdr/rkcdp/&lt;node&gt;/replica.raw</code>. Rebuild recreates a dead node from
+          that replica as a new VM. It boots as STANDBY and heals from the active manager.
         </div>
         {apiMissing && <div style={{ fontSize: 12, color: 'var(--red)', marginBottom: 8 }}>
           /api/rkcdp/nodes is not served by this manager's API — the api_rkcdp module is not loaded (check <code>journalctl -u kvmdr-api</code>).
@@ -122,7 +123,7 @@ function ManagerRecoveryTab({ showToast }) {
                           </div>
                         </div>
                       ) : <div>current as of {when(n.applied_time)}</div>}
-                      <div style={{ fontSize: 10, color: 'var(--text3)' }}>seq {n.applied_seq ?? '—'}{n.pending_cycles ? ` · ${n.pending_cycles} cycles pending` : ''}</div>
+                      <div style={{ fontSize: 10, color: 'var(--text3)' }}>seq {n.applied_seq ?? '—'}{n.pending_bytes ? ` · ${Math.round(n.pending_bytes / 1048576)} MB parked` : ''}</div>
                     </td>
                     <td style={td}>{lag == null ? '—' : lag === 0 ? <span style={{ color: 'var(--green)' }}>0</span> : `${lag} writes`}</td>
                     <td style={td}>{gb(n.replica_used_bytes)}<div style={{ fontSize: 10, color: 'var(--text3)' }}>of {gb(n.replica_bytes)}</div></td>
