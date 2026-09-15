@@ -1,6 +1,6 @@
 --- /mnt/user-data/uploads/Settings.jsx	2026-09-14 16:47:58.144847000 +0000
-+++ Settings.jsx	2026-09-15 11:16:30.301319733 +0000
-@@ -3931,6 +3931,204 @@
++++ Settings.jsx	2026-09-15 13:28:09.683620718 +0000
+@@ -3931,6 +3931,205 @@
    )
  }
  
@@ -41,6 +41,7 @@
 +    const m = {
 +      cdp:         { label: 'CDP',         color: 'var(--green)' },
 +      syncing:     { label: 'Syncing',     color: 'var(--blue)' },
++      paused:      { label: 'Paused',      color: 'var(--yellow, #eab308)' },
 +      bitmap:      { label: 'Bitmap',      color: 'var(--yellow, #eab308)' },
 +      stale:       { label: 'Stale',       color: 'var(--red)' },
 +      unprotected: { label: 'Unprotected', color: 'var(--text3)' },
@@ -86,9 +87,9 @@
 +      <Section title="Manager Recovery"
 +        right={<button style={btnStyle()} onClick={load}>Refresh</button>}>
 +        <div style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 10 }}>
-+          Each manager node ships every disk write to <code>/replication/_kvmdr/rkcdp/&lt;node&gt;/</code>;
-+          the peer folds them into an always-current replica. Rebuild recreates a dead node from that
-+          replica as a new VM. It boots as STANDBY and heals from the active manager.
++          Each manager node writes every disk write straight into its replica at
++          <code>/replication/_kvmdr/rkcdp/&lt;node&gt;/replica.raw</code>. Rebuild recreates a dead node from
++          that replica as a new VM. It boots as STANDBY and heals from the active manager.
 +        </div>
 +        {apiMissing && <div style={{ fontSize: 12, color: 'var(--red)', marginBottom: 8 }}>
 +          /api/rkcdp/nodes is not served by this manager's API — the api_rkcdp module is not loaded (check <code>journalctl -u kvmdr-api</code>).
@@ -128,7 +129,7 @@
 +                          </div>
 +                        </div>
 +                      ) : <div>current as of {when(n.applied_time)}</div>}
-+                      <div style={{ fontSize: 10, color: 'var(--text3)' }}>seq {n.applied_seq ?? '—'}{n.pending_cycles ? ` · ${n.pending_cycles} cycles pending` : ''}</div>
++                      <div style={{ fontSize: 10, color: 'var(--text3)' }}>seq {n.applied_seq ?? '—'}{n.pending_bytes ? ` · ${Math.round(n.pending_bytes / 1048576)} MB parked` : ''}</div>
 +                    </td>
 +                    <td style={td}>{lag == null ? '—' : lag === 0 ? <span style={{ color: 'var(--green)' }}>0</span> : `${lag} writes`}</td>
 +                    <td style={td}>{gb(n.replica_used_bytes)}<div style={{ fontSize: 10, color: 'var(--text3)' }}>of {gb(n.replica_bytes)}</div></td>
@@ -205,7 +206,7 @@
  export default function Settings({ showToast, me, initialTab, onTabConsumed }) {
    const role = me?.role || 'viewer'
    const isAdmin    = role === 'admin'
-@@ -3961,6 +4159,8 @@
+@@ -3961,6 +4160,8 @@
        icon:_ti('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>') }] : []),
      ...(isAdmin ? [{ key:'license',  label:'License',
        icon:_ti('<circle cx="12" cy="8" r="6"/><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/>') }] : []),
@@ -214,7 +215,7 @@
      ...(isAdmin ? [{ key:'security', label:'Security',
        icon:_ti('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>') }] : []),
      { key:'appearance', label:'Appearance',
-@@ -4014,6 +4214,7 @@
+@@ -4014,6 +4215,7 @@
        {tab === 'advanced' && isAdmin && <AdvancedTab showToast={showToast} />}
        {tab === 'license'  && isAdmin && <LicenseTab  showToast={showToast} />}
        {tab === 'security' && isAdmin && <SecurityTab showToast={showToast} />}
