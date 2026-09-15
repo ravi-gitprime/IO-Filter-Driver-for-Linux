@@ -162,6 +162,8 @@ def init(app, get_db, require_admin):
             cmd += ["--bridge", payload["bridge"]]
         if payload.get("force"):
             cmd += ["--force"]
+        if payload.get("source") in ("replica", "seed"):
+            cmd += ["--from", payload["source"]]
         log = open("/var/log/kvmdr/rkcdp-rebuild-%s.log" % node, "a") if os.path.isdir("/var/log/kvmdr") else subprocess.DEVNULL
         subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         return {"ok": True, "node": node, "host": h["hostname"], "started_by": u.get("username")}

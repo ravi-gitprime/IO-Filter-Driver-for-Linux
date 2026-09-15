@@ -1,12 +1,12 @@
 --- /mnt/user-data/uploads/Settings.jsx	2026-09-14 16:47:58.144847000 +0000
-+++ Settings.jsx	2026-09-15 19:35:15.336581762 +0000
++++ Settings.jsx	2026-09-15 20:33:41.332958420 +0000
 @@ -1,4 +1,4 @@
 -import { useState, useEffect, Fragment } from 'react'
 +import { useState, useEffect, useRef, Fragment } from 'react'
  import axios from 'axios'
  import { getThemePref, getFontSizePref, setThemePref, setFontSizePref } from '../theme'
  
-@@ -3931,6 +3931,216 @@
+@@ -3931,6 +3931,225 @@
    )
  }
  
@@ -79,6 +79,7 @@
 +  const openRebuild = (n) => setForm({
 +    node: n.node, host_id: hosts[0]?.host_id ?? '', vmid: '', storage: 'local-lvm',
 +    bridge: 'vmbr0', force: n.state !== 'stale' && n.state !== 'unprotected',
++    source: 'replica', seed_present: !!n.seed_present,
 +  })
 +
 +  const submit = async () => {
@@ -91,7 +92,7 @@
 +        node: form.node, host_id: Number(form.host_id),
 +        vmid: form.vmid ? Number(form.vmid) : undefined,
 +        storage: form.storage || undefined, bridge: form.bridge || undefined,
-+        force: !!form.force,
++        force: !!form.force, source: form.source,
 +      })
 +      showToast?.(`Rebuild of ${form.node} started`)
 +      setForm(null)
@@ -168,7 +169,12 @@
 +            )}
 +            {form && form.node === n.node && (
 +              <div style={{ padding: '8px 0 14px', borderTop: '1px solid var(--border)' }}>
-+                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 10 }}>
++                <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 2fr 1fr 1fr 1fr', gap: 10 }}>
++                  <Field label="Rebuild from">
++                    <Sel value={form.source} onChange={v => setForm(f => ({ ...f, source: v }))}
++                         options={[{ value: 'replica', label: 'Latest replica' },
++                                   ...(form.seed_present ? [{ value: 'seed', label: 'Clean seed (post-setup)' }] : [])]} />
++                  </Field>
 +                  <Field label="Proxmox host">
 +                    <Sel value={form.host_id} onChange={v => setForm(f => ({ ...f, host_id: v }))}
 +                         options={hosts.map(h => ({ value: h.host_id, label: `${h.hostname} (${h.ip})` }))} />
@@ -179,6 +185,9 @@
 +                  <Field label="Storage"><Inp value={form.storage} onChange={v => setForm(f => ({ ...f, storage: v }))} /></Field>
 +                  <Field label="Bridge"><Inp value={form.bridge} onChange={v => setForm(f => ({ ...f, bridge: v }))} /></Field>
 +                </div>
++                {form.source === 'seed' && <div style={{ fontSize: 11, color: 'var(--text2)', marginBottom: 8 }}>
++                  Clean post-setup disk. Everything changed since setup comes back from the active manager (DB via heal-standby).
++                </div>}
 +                {form.force && <div style={{ fontSize: 11, color: 'var(--yellow, #eab308)', marginBottom: 8 }}>
 +                  This node still reports alive. Rebuilding creates a second VM with the same MAC/IP — stop the old one first.
 +                </div>}
@@ -223,7 +232,7 @@
  export default function Settings({ showToast, me, initialTab, onTabConsumed }) {
    const role = me?.role || 'viewer'
    const isAdmin    = role === 'admin'
-@@ -3961,6 +4171,8 @@
+@@ -3961,6 +4180,8 @@
        icon:_ti('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>') }] : []),
      ...(isAdmin ? [{ key:'license',  label:'License',
        icon:_ti('<circle cx="12" cy="8" r="6"/><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/>') }] : []),
@@ -232,7 +241,7 @@
      ...(isAdmin ? [{ key:'security', label:'Security',
        icon:_ti('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>') }] : []),
      { key:'appearance', label:'Appearance',
-@@ -4014,6 +4226,7 @@
+@@ -4014,6 +4235,7 @@
        {tab === 'advanced' && isAdmin && <AdvancedTab showToast={showToast} />}
        {tab === 'license'  && isAdmin && <LicenseTab  showToast={showToast} />}
        {tab === 'security' && isAdmin && <SecurityTab showToast={showToast} />}

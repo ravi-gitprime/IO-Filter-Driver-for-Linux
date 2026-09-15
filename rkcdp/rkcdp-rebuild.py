@@ -3,7 +3,7 @@
 """
 rkcdp-rebuild - rebuild a dead node from its replica.raw on a Proxmox host.
 
-  rkcdp-rebuild --node km-tgt1 --host 192.168.1.180 [--user root]
+  rkcdp-rebuild --node km-tgt1 --host 192.168.1.180 [--user root] [--from replica|seed]
                 [--vmid 9107] [--storage local-lvm] [--bridge vmbr0]
                 [--journal /replication/_kvmdr/rkcdp]
                 [--host-journal /replication/_kvmdr/rkcdp]   path as the host sees it
@@ -133,6 +133,8 @@ def main():
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--keep-copy", action="store_true")
     ap.add_argument("--no-standby", action="store_true", help="do not mark standby (both-managers-down case)")
+    ap.add_argument("--from", dest="source", choices=["replica", "seed"], default="replica",
+                    help="replica = latest disk (default); seed = clean post-setup copy")
     a = ap.parse_args()
     host_journal = a.host_journal or a.journal
 
@@ -146,10 +148,10 @@ def main():
         manifest = load_json(os.path.join(nd, "manifest.json"))
         status = load_json(st_path0) if os.path.exists(st_path0 := os.path.join(nd, "status.json")) else {}
         node = load_json(os.path.join(nd, "node.json")) if os.path.exists(os.path.join(nd, "node.json")) else {}
-        replica = os.path.join(nd, "replica.raw")
+        replica = os.path.join(nd, "seed.raw" if a.source == "seed" else "replica.raw")
         if not os.path.exists(replica):
-            raise RuntimeError("no replica.raw for %s" % a.node)
-        if "base_end_seq" not in manifest:
+            raise RuntimeError("no %s for %s" % (os.path.basename(replica), a.node))
+        if a.source == "replica" and "base_end_seq" not in manifest:
             raise RuntimeError("base copy never completed for %s" % a.node)
         st_path = os.path.join(nd, "status.json")
         if os.path.exists(st_path):
@@ -174,7 +176,10 @@ def main():
         rdir = os.path.join(a.journal, "rebuild")
         os.makedirs(rdir, exist_ok=True)
         copy_path = os.path.join(rdir, "%s-%s.raw" % (a.node, ts))
-        pg.step(3, "copying replica (as of seq %s, %s)" % (last_seq, time.strftime("%H:%M:%S", time.localtime(last_time or 0))))
+        if a.source == "seed":
+            pg.step(3, "copying clean seed (post-setup image)")
+        else:
+            pg.step(3, "copying replica (as of seq %s, %s)" % (last_seq, time.strftime("%H:%M:%S", time.localtime(last_time or 0))))
         sh("cp --sparse=always %s %s" % (replica, copy_path), timeout=3600)
         os.remove(lock)
         lock = None
