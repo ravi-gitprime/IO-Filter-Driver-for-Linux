@@ -9,9 +9,10 @@ case "$1" in prereqs) prereqs; exit 0;; esac
 
 DM_NAME=rkcdp
 [ -f /etc/rkcdp/initramfs.conf ] && . /etc/rkcdp/initramfs.conf
+kmsg() { echo "rkcdp: $*" > /dev/kmsg 2>/dev/null; }
 
 for x in $(cat /proc/cmdline); do
-	case "$x" in kvmdr.cdp=0) log_warning_msg "rkcdp: disabled by kernel arg"; exit 0;; esac
+	case "$x" in kvmdr.cdp=0) kmsg "dm-cdp [DISABLED] by kernel arg kvmdr.cdp=0"; exit 0;; esac
 done
 
 # resolve the root partition from ROOT= (UUID=, LABEL=, or /dev path)
@@ -25,19 +26,19 @@ while [ -z "$PART" ] && [ $n -lt 30 ]; do
 	sleep 0.5; n=$((n+1))
 	case "$ROOT" in UUID=*|LABEL=*|PARTUUID=*) PART=$(blkid -l -t "$ROOT" -o device 2>/dev/null);; esac
 done
-[ -n "$PART" ] || { log_warning_msg "rkcdp: cannot resolve $ROOT, booting unwrapped"; exit 0; }
+[ -n "$PART" ] || { kmsg "dm-cdp [FAILED] cannot resolve $ROOT, booting unwrapped"; exit 0; }
 case "$PART" in /dev/mapper/*|/dev/dm-*) exit 0;; esac   # already wrapped
 
 PNAME=$(basename "$PART")
 DISK=$(basename "$(readlink -f "/sys/class/block/$PNAME/..")")
 PNUM=$(cat "/sys/class/block/$PNAME/partition" 2>/dev/null)
-[ -n "$DISK" ] && [ -n "$PNUM" ] && [ -b "/dev/$DISK" ] || { log_warning_msg "rkcdp: no parent disk for $PART"; exit 0; }
+[ -n "$DISK" ] && [ -n "$PNUM" ] && [ -b "/dev/$DISK" ] || { kmsg "dm-cdp [FAILED] no parent disk for $PART, booting unwrapped"; exit 0; }
 
 modprobe dm-mod
-modprobe dm-cdp || { log_warning_msg "rkcdp: dm-cdp module missing, booting unwrapped"; exit 0; }
+modprobe dm-cdp || { kmsg "dm-cdp [FAILED] module missing, booting unwrapped"; exit 0; }
 SECT=$(blockdev --getsz "/dev/$DISK")
 if ! dmsetup create "$DM_NAME" --table "0 $SECT cdp /dev/$DISK 0"; then
-	log_warning_msg "rkcdp: dmsetup create failed, booting unwrapped"; exit 0
+	kmsg "dm-cdp [FAILED] dmsetup create on /dev/$DISK, booting unwrapped"; exit 0
 fi
 kpartx -a -s "/dev/mapper/$DM_NAME"
 NEWROOT="/dev/mapper/${DM_NAME}${PNUM}"
@@ -45,9 +46,9 @@ n=0
 while [ ! -b "$NEWROOT" ] && [ $n -lt 20 ]; do sleep 0.25; n=$((n+1)); done
 if [ -b "$NEWROOT" ]; then
 	echo "ROOT=$NEWROOT" >> /conf/param.conf
-	log_success_msg "rkcdp: root disk /dev/$DISK wrapped, root=$NEWROOT"
+	kmsg "dm-cdp under /dev/$DISK, root=$NEWROOT [SUCCESS]"
 else
-	log_warning_msg "rkcdp: $NEWROOT did not appear; removing wrap"
+	kmsg "dm-cdp [FAILED] $NEWROOT did not appear, booting unwrapped"
 	kpartx -d "/dev/mapper/$DM_NAME"; dmsetup remove "$DM_NAME"
 fi
 exit 0
