@@ -293,6 +293,12 @@ def main():
     dm_dev = "/dev/mapper/" + conf["dm_name"]
 
     cdp_fd = os.open(cdp_path, os.O_RDONLY | os.O_NONBLOCK)
+    # counters are cumulative since module load; make them reflect this run
+    try:
+        import fcntl
+        fcntl.ioctl(cdp_fd, dmcdp.IOC_RESET_STATS)
+    except OSError:
+        pass
     st = dmcdp.status(cdp_fd)
     log("reading %s (dev %d MiB, ring %d MiB)" % (cdp_path, st["dev_sectors"] // 2048, st["ring_size"] >> 20))
 
