@@ -37,6 +37,7 @@ READ_SZ = 16 << 20
 COPY_CHUNK = 4 << 20
 
 stop = False
+base_progress = {}       # filled by base_copy(), reported in status.json
 
 
 def log(msg):
@@ -178,6 +179,7 @@ def base_copy(conf, jn, cdp_fd, src):
     log("base copy %s (%d MiB) -> %s" % (src, size >> 20, dst))
     t0 = time.time()
     mbps = float(conf.get("base_copy_mbps") or 0)
+    base_progress.update({"done": 0, "total": size, "started": t0, "mbps": 0.0, "eta_sec": None})
     with open(src, "rb", buffering=0) as fi, open(tmp, "wb") as fo:
         fo.truncate(size)
         off = 0
@@ -190,6 +192,10 @@ def base_copy(conf, jn, cdp_fd, src):
                 fo.seek(off)
                 fo.write(buf)
             off += len(buf)
+            el = time.time() - t0
+            rate = off / el if el > 0 else 0
+            base_progress.update({"done": off, "mbps": round(rate / 1048576, 1),
+                                  "eta_sec": int((size - off) / rate) if rate > 0 else None})
             if mbps > 0:
                 # throttle: never let the base copy starve the node's own I/O
                 expected = off / (mbps * 1048576)
@@ -202,6 +208,7 @@ def base_copy(conf, jn, cdp_fd, src):
         os.unlink(tmp)
         raise SystemExit("interrupted during base copy")
     os.replace(tmp, dst)
+    base_progress.clear()
     end_seq = dmcdp.status(cdp_fd)["seq_next"]
     log("base copy done in %.0fs, base_end_seq=%d" % (time.time() - t0, end_seq))
     return {"size": size, "base_end_seq": end_seq, "base_time": time.time()}
@@ -390,8 +397,11 @@ def ship_loop(conf, jn, cdp_fd, dm_dev):
             state = "CDP"
             if st["flags"] & dmcdp.S_OVERFLOWED:
                 state = "BITMAP"
+            if base_progress:
+                state = "SYNCING"
             jn.write_json("status.json", {
                 "node": conf["node"], "state": state, "time": time.time(),
+                "base_copy": dict(base_progress) if base_progress else None,
                 "last_seq": last_seq, "seq_next": st["seq_next"],
                 "ring_used": st["ring_used"], "ring_size": st["ring_size"],
                 "overflows": st["overflows"], "shipped_bytes": shipped_bytes})

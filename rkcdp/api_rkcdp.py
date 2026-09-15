@@ -45,7 +45,9 @@ def _nodes():
         node = _load(os.path.join(d, "node.json"), {})
         now = time.time()
         age = now - status.get("time", 0) if status else None
-        if "base_end_seq" not in manifest:      # 0 is a valid value
+        if age is not None and age <= STALE_SEC and status.get("state") == "SYNCING":
+            state = "syncing"
+        elif "base_end_seq" not in manifest:    # 0 is a valid value
             state = "unprotected"
         elif age is None or age > STALE_SEC:
             state = "stale"
@@ -74,6 +76,7 @@ def _nodes():
             "replica_used_bytes": rstat.st_blocks * 512 if rstat else None,
             "device": manifest.get("device"),
             "ips": node.get("ips"), "mem_mb": node.get("mem_mb"), "cpus": node.get("cpus"),
+            "base_copy": status.get("base_copy"),
             "rebuilding": bool(prog and prog.get("state") == "running"),
             "rebuild": prog,
         })

@@ -34,6 +34,7 @@ function ManagerRecoveryTab({ showToast }) {
   const stateBadge = (s) => {
     const m = {
       cdp:         { label: 'CDP',         color: 'var(--green)' },
+      syncing:     { label: 'Syncing',     color: 'var(--blue)' },
       bitmap:      { label: 'Bitmap',      color: 'var(--yellow, #eab308)' },
       stale:       { label: 'Stale',       color: 'var(--red)' },
       unprotected: { label: 'Unprotected', color: 'var(--text3)' },
@@ -112,7 +113,15 @@ function ManagerRecoveryTab({ showToast }) {
                       </div>
                     </td>
                     <td style={td}>
-                      <div>current as of {when(n.applied_time)}</div>
+                      {n.state === 'syncing' && n.base_copy ? (
+                        <div>
+                          <div>base copy {Math.round(100 * n.base_copy.done / Math.max(1, n.base_copy.total))}% · {n.base_copy.mbps} MB/s
+                            {n.base_copy.eta_sec != null ? ` · ${Math.ceil(n.base_copy.eta_sec / 60)} min left` : ''}</div>
+                          <div style={{ height: 4, background: 'var(--bg3)', borderRadius: 2, marginTop: 4, width: 180 }}>
+                            <div style={{ height: 4, width: `${Math.round(100 * n.base_copy.done / Math.max(1, n.base_copy.total))}%`, background: 'var(--blue)', borderRadius: 2 }} />
+                          </div>
+                        </div>
+                      ) : <div>current as of {when(n.applied_time)}</div>}
                       <div style={{ fontSize: 10, color: 'var(--text3)' }}>seq {n.applied_seq ?? '—'}{n.pending_cycles ? ` · ${n.pending_cycles} cycles pending` : ''}</div>
                     </td>
                     <td style={td}>{lag == null ? '—' : lag === 0 ? <span style={{ color: 'var(--green)' }}>0</span> : `${lag} writes`}</td>
@@ -121,7 +130,7 @@ function ManagerRecoveryTab({ showToast }) {
                       {n.rebuilding
                         ? <span style={{ fontSize: 11, color: 'var(--blue)' }}>rebuilding…</span>
                         : <button style={btnStyle(n.state === 'stale' ? 'red' : undefined)}
-                                  disabled={n.state === 'unprotected'}
+                                  disabled={n.state === 'unprotected' || n.state === 'syncing'}
                                   onClick={() => openRebuild(n)}>Rebuild</button>}
                     </td>
                   </tr>
