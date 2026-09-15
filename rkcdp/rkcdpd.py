@@ -18,10 +18,12 @@ Flow:
      during the copy are applied concurrently; re-applying is idempotent,
      so base + live writes = the disk. manifest.base_end_seq marks completion.
   5. overflow (GAP_BEFORE): bitmap recovery thread re-reads dirty chunks
-     into the replica. While it runs, incoming records are parked in
-     pending.bin and applied afterwards, so the ring never blocks and
-     ordering holds. Recovery never runs concurrently with the base copy.
-  6. <node>/.rebuild.lock present -> records are parked until it is gone.
+     into the replica. Copy threads and the apply loop share one lock per
+     chunk/record, so live records keep applying during a base copy or a
+     recovery with no ordering race and nothing parked. Recovery never runs
+     concurrently with the base copy.
+  6. <node>/.rebuild.lock present -> records are parked in pending.bin until
+     it is gone (the only time anything is parked).
 
 Config /etc/rkcdp/rkcdp.conf (JSON):
   device          omit = initramfs-wrapped root disk; or "/dev/sdb"
@@ -237,11 +239,15 @@ class Daemon:
         with open(self.dm_dev, "rb", buffering=0) as fi:
             off = 0
             while off < self.size and not stop:
-                buf = fi.read(COPY_CHUNK)
+                # read+write under the lock so a live record for this chunk
+                # lands either before the read (then it is in buf) or after
+                # the write (then it wins). No parking needed during the copy.
+                with self.lock:
+                    buf = fi.read(COPY_CHUNK)
+                    if buf and buf != zero[:len(buf)]:
+                        os.pwrite(self.replica.fd, buf, off)
                 if not buf:
                     break
-                if buf != zero[:len(buf)]:
-                    os.pwrite(self.replica.fd, buf, off)
                 off += len(buf)
                 el = time.time() - t0
                 rate = off / el if el > 0 else 0
@@ -278,9 +284,10 @@ class Daemon:
                 off, remaining = sector * 512, nsect * 512
                 while remaining and not stop:
                     n = min(remaining, COPY_CHUNK)
-                    dev.seek(off)
-                    data = dev.read(n)
-                    os.pwrite(self.replica.fd, data, off)
+                    with self.lock:
+                        dev.seek(off)
+                        data = dev.read(n)
+                        os.pwrite(self.replica.fd, data, off)
                     off += n
                     remaining -= n
                     total += n
@@ -297,11 +304,12 @@ class Daemon:
 
     # ---------------------------------------------------------------- apply
     def paused(self):
-        """Records are parked while a recovery is running/queued or a rebuild copies the replica."""
-        return self.recovery_active() or bool(self.recovery_queue) or os.path.exists(self.lock_path)
+        """Records are parked only while a rebuild is copying the replica."""
+        return os.path.exists(self.lock_path)
 
     def apply_one(self, r, payload):
-        self.replica.write(r, payload)
+        with self.lock:
+            self.replica.write(r, payload)
         self.last_seq = r.seq
         self.records += 1
         if r.type == dmcdp.REC_WRITE:
@@ -316,7 +324,6 @@ class Daemon:
             if r.flags & dmcdp.F_GAP_BEFORE and r.seq != self.gap_seen:
                 self.gap_seen = r.seq
                 self.recovery_queue.append(r.seq)
-                park = True          # everything from the gap on waits for the recovery
             if park:
                 parked += buf[off:off + r.rec_len]
             else:
@@ -328,15 +335,23 @@ class Daemon:
         return buf[off:]
 
     def apply_pending(self):
-        """Apply records parked in pending.bin, in order."""
+        """Apply records parked in pending.bin, in order, streaming (never load it whole)."""
         if not os.path.exists(self.pending_path):
             return
-        with open(self.pending_path, "rb") as f:
-            data = f.read()
         n = 0
-        for r, payload in dmcdp.iter_records(data):
-            self.apply_one(r, payload)
-            n += 1
+        tail = b""
+        with open(self.pending_path, "rb") as f:
+            while True:
+                chunk = f.read(READ_SZ)
+                if not chunk:
+                    break
+                buf = tail + chunk
+                off = 0
+                for r, payload in dmcdp.iter_records(buf):
+                    self.apply_one(r, payload)
+                    n += 1
+                    off += r.rec_len
+                tail = buf[off:]
         os.unlink(self.pending_path)
         if n:
             log("applied %d parked records" % n)
