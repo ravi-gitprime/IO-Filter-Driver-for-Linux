@@ -45,5 +45,6 @@ echo "RESUME=none" > /etc/initramfs-tools/conf.d/resume
 CONF
 update-initramfs -u
 systemctl daemon-reload
-systemctl disable rkcdp-applier 2>/dev/null; systemctl enable rkcdpd rkcdp-firstboot >/dev/null
+systemctl disable rkcdp-applier >/dev/null 2>&1 || true
+systemctl enable rkcdpd rkcdp-firstboot >/dev/null
 echo "rkcdp installed. Reboot; root will mount via /dev/mapper/rkcdp<N>. Disable with kernel arg kvmdr.cdp=0."
