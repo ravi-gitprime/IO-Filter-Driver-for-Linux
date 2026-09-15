@@ -18,9 +18,9 @@ Flow:
      during the copy are applied concurrently; re-applying is idempotent,
      so base + live writes = the disk. manifest.base_end_seq marks completion.
   5. overflow (GAP_BEFORE): bitmap recovery thread re-reads dirty chunks
-     into the replica. Copy threads and the apply loop share one lock per
-     chunk/record, so live records keep applying during a base copy or a
-     recovery with no ordering race and nothing parked. Recovery never runs
+     into the replica. A copy thread flags the 4 MB chunk it is on; records
+     for that chunk are deferred until it lands, everything else applies
+     immediately. No ordering race, nothing parked, no lock held during I/O. Recovery never runs
      concurrently with the base copy.
   6. <node>/.rebuild.lock present -> records are parked in pending.bin until
      it is gone (the only time anything is parked).
@@ -218,7 +218,9 @@ class Daemon:
         write_json(self.manifest_path, self.manifest)
         self.replica = Replica(os.path.join(self.root, "replica.raw"), self.size)
 
-        self.lock = threading.Lock()
+        self.lock = threading.Lock()      # guards copying/deferred and each replica write
+        self.copying = None               # (start_off, end_off) chunk a copy thread is on
+        self.deferred = []                # records for that chunk, applied once it lands
         self.base_thread = None
         self.base_progress = {}
         self.recovery_thread = None
@@ -228,6 +230,26 @@ class Daemon:
         self.last_time = None
         self.records = 0
         self.bytes = 0
+
+    # ---------------------------------------------------------------- copy protocol
+    def copy_chunk(self, dev, off, n, skip_zero=None):
+        """Copy [off, off+n) from the device into the replica without racing the
+        apply loop: flag the range (lock held only for the flag), do the I/O
+        unlocked, then apply any records that arrived for that range meanwhile
+        (they are newer than what we just wrote)."""
+        with self.lock:
+            self.copying = (off, off + n)
+            self.deferred = []
+        dev.seek(off)
+        buf = dev.read(n)
+        if buf and not (skip_zero is not None and buf == skip_zero[:len(buf)]):
+            os.pwrite(self.replica.fd, buf, off)
+        with self.lock:
+            self.copying = None
+            late, self.deferred = self.deferred, []
+        for r, payload in late:
+            self.apply_one(r, payload)
+        return len(buf)
 
     # ---------------------------------------------------------------- base copy
     def base_copy(self):
@@ -239,21 +261,15 @@ class Daemon:
         with open(self.dm_dev, "rb", buffering=0) as fi:
             off = 0
             while off < self.size and not stop:
-                # read+write under the lock so a live record for this chunk
-                # lands either before the read (then it is in buf) or after
-                # the write (then it wins). No parking needed during the copy.
-                with self.lock:
-                    buf = fi.read(COPY_CHUNK)
-                    if buf and buf != zero[:len(buf)]:
-                        os.pwrite(self.replica.fd, buf, off)
-                if not buf:
+                n = self.copy_chunk(fi, off, min(COPY_CHUNK, self.size - off), skip_zero=zero)
+                if not n:
                     break
-                off += len(buf)
+                off += n
                 el = time.time() - t0
                 rate = off / el if el > 0 else 0
                 self.base_progress.update({"done": off, "mbps": round(rate / 1048576, 1),
                                            "eta_sec": int((self.size - off) / rate) if rate > 0 else None})
-                thr.account(len(buf))
+                thr.account(n)
         if stop:
             log("base copy interrupted; restarts from scratch next run")
             self.base_progress = {}
@@ -283,11 +299,9 @@ class Daemon:
             for sector, nsect in rec["extents"]:
                 off, remaining = sector * 512, nsect * 512
                 while remaining and not stop:
-                    n = min(remaining, COPY_CHUNK)
-                    with self.lock:
-                        dev.seek(off)
-                        data = dev.read(n)
-                        os.pwrite(self.replica.fd, data, off)
+                    n = self.copy_chunk(dev, off, min(remaining, COPY_CHUNK))
+                    if not n:
+                        break
                     off += n
                     remaining -= n
                     total += n
@@ -308,7 +322,12 @@ class Daemon:
         return os.path.exists(self.lock_path)
 
     def apply_one(self, r, payload):
+        start, end = r.sector * 512, r.sector * 512 + r.len
         with self.lock:
+            c = self.copying
+            if c is not None and start < c[1] and end > c[0]:
+                self.deferred.append((r, bytes(payload)))   # chunk in flight: apply after it lands
+                return
             self.replica.write(r, payload)
         self.last_seq = r.seq
         self.records += 1
