@@ -11,14 +11,18 @@ function ManagerRecoveryTab({ showToast }) {
   const [busy, setBusy]     = useState(false)
   const [apiMissing, setApiMissing] = useState(false)
 
+  const inflight = useRef(false)
   const load = async () => {
+    if (inflight.current) return          // never stack polls behind a slow API
+    inflight.current = true
     try {
       const [n, h, m] = await Promise.all([
         axios.get('/api/rkcdp/nodes'), axios.get('/api/hosts'),
         axios.get('/api/manager_status').catch(() => ({ data: null })),
       ])
-      setApiMissing(!Array.isArray(n.data))
-      setNodes(Array.isArray(n.data) ? n.data : [])
+      const list = n.data && Array.isArray(n.data.nodes) ? n.data.nodes : (Array.isArray(n.data) ? n.data : null)
+      setApiMissing(list === null)
+      setNodes(list || [])
       setHosts(Array.isArray(h.data) ? h.data.filter(x => !x.hv_type || /prox|pve/i.test(x.hv_type)) : [])
       const r = {}
       const ms = m.data
@@ -27,12 +31,13 @@ function ManagerRecoveryTab({ showToast }) {
     } catch (e) {
       showToast?.(`Could not load recovery state: ${e.message}`, 'error')
     } finally {
+      inflight.current = false
       setLoading(false)
     }
   }
   useEffect(() => {
     load()
-    const t = setInterval(load, 3000)
+    const t = setInterval(load, 5000)
     return () => clearInterval(t)
   }, [])
 

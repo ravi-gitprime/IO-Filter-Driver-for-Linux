@@ -1,6 +1,12 @@
 --- /mnt/user-data/uploads/Settings.jsx	2026-09-14 16:47:58.144847000 +0000
-+++ Settings.jsx	2026-09-15 15:01:01.888210155 +0000
-@@ -3931,6 +3931,200 @@
++++ Settings.jsx	2026-09-15 15:12:47.848706662 +0000
+@@ -1,4 +1,4 @@
+-import { useState, useEffect, Fragment } from 'react'
++import { useState, useEffect, useRef, Fragment } from 'react'
+ import axios from 'axios'
+ import { getThemePref, getFontSizePref, setThemePref, setFontSizePref } from '../theme'
+ 
+@@ -3931,6 +3931,205 @@
    )
  }
  
@@ -17,14 +23,18 @@
 +  const [busy, setBusy]     = useState(false)
 +  const [apiMissing, setApiMissing] = useState(false)
 +
++  const inflight = useRef(false)
 +  const load = async () => {
++    if (inflight.current) return          // never stack polls behind a slow API
++    inflight.current = true
 +    try {
 +      const [n, h, m] = await Promise.all([
 +        axios.get('/api/rkcdp/nodes'), axios.get('/api/hosts'),
 +        axios.get('/api/manager_status').catch(() => ({ data: null })),
 +      ])
-+      setApiMissing(!Array.isArray(n.data))
-+      setNodes(Array.isArray(n.data) ? n.data : [])
++      const list = n.data && Array.isArray(n.data.nodes) ? n.data.nodes : (Array.isArray(n.data) ? n.data : null)
++      setApiMissing(list === null)
++      setNodes(list || [])
 +      setHosts(Array.isArray(h.data) ? h.data.filter(x => !x.hv_type || /prox|pve/i.test(x.hv_type)) : [])
 +      const r = {}
 +      const ms = m.data
@@ -33,12 +43,13 @@
 +    } catch (e) {
 +      showToast?.(`Could not load recovery state: ${e.message}`, 'error')
 +    } finally {
++      inflight.current = false
 +      setLoading(false)
 +    }
 +  }
 +  useEffect(() => {
 +    load()
-+    const t = setInterval(load, 3000)
++    const t = setInterval(load, 5000)
 +    return () => clearInterval(t)
 +  }, [])
 +
@@ -201,7 +212,7 @@
  export default function Settings({ showToast, me, initialTab, onTabConsumed }) {
    const role = me?.role || 'viewer'
    const isAdmin    = role === 'admin'
-@@ -3961,6 +4155,8 @@
+@@ -3961,6 +4160,8 @@
        icon:_ti('<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>') }] : []),
      ...(isAdmin ? [{ key:'license',  label:'License',
        icon:_ti('<circle cx="12" cy="8" r="6"/><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/>') }] : []),
@@ -210,7 +221,7 @@
      ...(isAdmin ? [{ key:'security', label:'Security',
        icon:_ti('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>') }] : []),
      { key:'appearance', label:'Appearance',
-@@ -4014,6 +4210,7 @@
+@@ -4014,6 +4215,7 @@
        {tab === 'advanced' && isAdmin && <AdvancedTab showToast={showToast} />}
        {tab === 'license'  && isAdmin && <LicenseTab  showToast={showToast} />}
        {tab === 'security' && isAdmin && <SecurityTab showToast={showToast} />}

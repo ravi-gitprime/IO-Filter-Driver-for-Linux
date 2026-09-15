@@ -15,6 +15,7 @@ Endpoints:
 import json
 import os
 import subprocess
+import threading
 import time
 
 JOURNAL = os.environ.get("RKCDP_JOURNAL", "/replication/_kvmdr/rkcdp")
@@ -80,13 +81,35 @@ def _nodes():
     return out
 
 
+# The node list is read from NFS. Never do that inside a request: when the
+# share is slow every poll would pin an API worker, and the whole API (auth
+# included) stalls behind it. A background thread refreshes a cache instead.
+_cache = {"nodes": [], "time": 0.0}
+_cache_lock = threading.Lock()
+REFRESH_SEC = 3
+
+
+def _refresh_loop():
+    while True:
+        try:
+            nodes = _nodes()
+            with _cache_lock:
+                _cache["nodes"], _cache["time"] = nodes, time.time()
+        except Exception as e:
+            print(f"rkcdp refresh failed: {e}")
+        time.sleep(REFRESH_SEC)
+
+
 def init(app, get_db, require_admin):
     from fastapi import Request, HTTPException
+
+    threading.Thread(target=_refresh_loop, name="rkcdp-refresh", daemon=True).start()
 
     @app.get("/api/rkcdp/nodes")
     def rkcdp_nodes(request: Request):
         require_admin(request)
-        return _nodes()
+        with _cache_lock:
+            return {"nodes": list(_cache["nodes"]), "as_of": _cache["time"]}
 
     @app.get("/api/rkcdp/rebuild/{node}")
     def rkcdp_rebuild_status(node: str, request: Request):
