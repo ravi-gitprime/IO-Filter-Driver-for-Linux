@@ -50,16 +50,23 @@ def write_json(path, obj):
     os.replace(tmp, path)
 
 
+_libc = None
+_punch_ok = True
+
+
 def punch(fd, off, length):
-    try:
-        os.posix_fallocate  # noqa: B018 - presence check only
-        import ctypes
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        if libc.fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
-                          ctypes.c_int64(off), ctypes.c_int64(length)) == 0:
-            return
-    except Exception:
-        pass
+    global _libc, _punch_ok
+    if _punch_ok:
+        try:
+            if _libc is None:
+                import ctypes
+                _libc = ctypes.CDLL("libc.so.6", use_errno=True)
+            if _libc.fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+                               ctypes.c_int64(off), ctypes.c_int64(length)) == 0:
+                return
+        except Exception:
+            pass
+        _punch_ok = False        # filesystem cannot punch: zero-fill from now on
     os.pwrite(fd, bytes(length), off)
 
 
@@ -107,6 +114,20 @@ def process_node(node_dir):
         lockf.close()
 
 
+def _commit(rfd, applied_path, state, batch, batch_bytes, t0):
+    t1 = time.time()
+    os.fsync(rfd)
+    t2 = time.time()
+    state["last_time"] = t2
+    write_json(applied_path, state)
+    for p in batch:
+        os.unlink(p)
+    t3 = time.time()
+    log("%s: %d files %.1f MB  apply %.1fs fsync %.1fs unlink %.1fs" % (
+        os.path.basename(os.path.dirname(applied_path)), len(batch), batch_bytes / 1048576,
+        t1 - t0, t2 - t1, t3 - t2))
+
+
 def _process_node_locked(node_dir, replica, cycles):
     applied_path = os.path.join(node_dir, "applied.json")
     state = {"last_seq": None, "last_time": None, "cycles": 0, "bytes": 0}
@@ -131,7 +152,7 @@ def _process_node_locked(node_dir, replica, cycles):
     try:
         # batch: apply many small cycle files, then one fsync + one applied.json
         # write. Per-file fsync over NFS could not keep up with 1 s cycles.
-        batch, batch_bytes = [], 0
+        batch, batch_bytes, t_batch = [], 0, time.time()
         for name in files:
             if stop:
                 break
@@ -143,19 +164,11 @@ def _process_node_locked(node_dir, replica, cycles):
             batch.append(path)
             batch_bytes += nbytes
             if len(batch) >= BATCH_FILES or batch_bytes >= BATCH_BYTES:
-                os.fsync(rfd)
-                state["last_time"] = time.time()
-                write_json(applied_path, state)
-                for p in batch:
-                    os.unlink(p)
+                _commit(rfd, applied_path, state, batch, batch_bytes, t_batch)
                 n_done += len(batch)
-                batch, batch_bytes = [], 0
+                batch, batch_bytes, t_batch = [], 0, time.time()
         if batch:
-            os.fsync(rfd)
-            state["last_time"] = time.time()
-            write_json(applied_path, state)
-            for p in batch:
-                os.unlink(p)
+            _commit(rfd, applied_path, state, batch, batch_bytes, t_batch)
             n_done += len(batch)
     finally:
         os.close(rfd)
