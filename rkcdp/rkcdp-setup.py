@@ -113,6 +113,7 @@ def do_install(journal):
         sh("systemctl restart rkcdpd", check=False)
         print("rkcdp-setup: upgraded, rkcdpd restarted")
     else:
+        sh("systemctl disable rkcdpd >/dev/null 2>&1", check=False)
         print("rkcdp-setup: installed. dm-cdp wraps the root disk from the next boot; rkcdpd starts after seeding.")
 
 
