@@ -159,8 +159,66 @@ class Throttle:
             time.sleep(min(ahead, 1.0))
 
 
+SEED_CHUNK = 65536
+
+
+def data_regions(fd, size):
+    """Yield (off, len) of the non-hole regions of a sparse file (SEEK_DATA/SEEK_HOLE)."""
+    off = 0
+    while off < size:
+        try:
+            d = os.lseek(fd, off, os.SEEK_DATA)
+        except OSError:
+            return
+        if d >= size:
+            return
+        h = os.lseek(fd, d, os.SEEK_HOLE)
+        yield d, h - d
+        off = h
+
+
+class SeedLayer:
+    """seed.raw: sparse image the size of the disk holding, for every chunk that
+    has changed since the seed point, what that chunk contained AT the seed
+    point. Written at most once per chunk (copy-on-first-write); read only by
+    a seed rebuild. Present only if rkcdp-seed created the file."""
+
+    def __init__(self, path, size):
+        self.path = path
+        self.size = size
+        self.fd = os.open(path, os.O_RDWR)
+        self.nchunks = (size + SEED_CHUNK - 1) // SEED_CHUNK
+        self.saved = bytearray((self.nchunks + 7) // 8)
+        n = 0
+        for off, length in data_regions(self.fd, size):
+            for c in range(off // SEED_CHUNK, (off + length + SEED_CHUNK - 1) // SEED_CHUNK):
+                self.saved[c >> 3] |= 1 << (c & 7)
+                n += 1
+        log("seed layer: %s, %d chunks already saved" % (path, n))
+
+    def is_saved(self, c):
+        return self.saved[c >> 3] & (1 << (c & 7))
+
+    def preserve(self, replica_fd, off, length):
+        """Before [off, off+length) of the replica is overwritten: save the
+        chunks in that range that have not been saved yet."""
+        c0, c1 = off // SEED_CHUNK, (off + length + SEED_CHUNK - 1) // SEED_CHUNK
+        for c in range(c0, min(c1, self.nchunks)):
+            if self.is_saved(c):
+                continue
+            o = c * SEED_CHUNK
+            old = os.pread(replica_fd, min(SEED_CHUNK, self.size - o), o)
+            if any(old):                       # a zero chunk is a hole either way
+                os.pwrite(self.fd, old, o)
+            self.saved[c >> 3] |= 1 << (c & 7)
+
+    def fsync(self):
+        os.fsync(self.fd)
+
+
 class Replica:
-    """replica.raw on NFS, with punch-hole and zero-fill fallback."""
+    """replica.raw on NFS, with punch-hole and zero-fill fallback, plus the
+    optional copy-on-first-write seed layer."""
 
     def __init__(self, path, size):
         self.path = path
@@ -171,11 +229,20 @@ class Replica:
         self.fd = os.open(path, os.O_RDWR)
         self._libc = None
         self._punch_ok = True
+        seed_path = os.path.join(os.path.dirname(path), "seed.raw")
+        self.seed = SeedLayer(seed_path, size) if os.path.exists(seed_path) else None
+
+    def pwrite(self, buf, off):
+        if self.seed:
+            self.seed.preserve(self.fd, off, len(buf))
+        os.pwrite(self.fd, buf, off)
 
     def write(self, rec, payload):
         if rec.type == dmcdp.REC_WRITE:
-            os.pwrite(self.fd, payload, rec.sector * 512)
+            self.pwrite(payload, rec.sector * 512)
         elif rec.type in (dmcdp.REC_DISCARD, dmcdp.REC_ZERO):
+            if self.seed:
+                self.seed.preserve(self.fd, rec.sector * 512, rec.len)
             self.punch(rec.sector * 512, rec.len)
 
     def punch(self, off, length):
@@ -194,6 +261,8 @@ class Replica:
 
     def fsync(self):
         os.fsync(self.fd)
+        if self.seed:
+            self.seed.fsync()
 
 
 class Daemon:
@@ -253,7 +322,7 @@ class Daemon:
         dev.seek(off)
         buf = dev.read(n)
         if buf and not (skip_zero is not None and buf == skip_zero[:len(buf)]):
-            os.pwrite(self.replica.fd, buf, off)
+            self.replica.pwrite(buf, off)
         with self.lock:
             self.copying = None
             late, self.deferred = self.deferred, []
@@ -397,6 +466,9 @@ class Daemon:
             return
         self.manifest = m
         self.seed_required = False
+        seed_path = os.path.join(self.root, "seed.raw")
+        if self.replica.seed is None and os.path.exists(seed_path):
+            self.replica.seed = SeedLayer(seed_path, self.size)
         if seed.get("boot_id") == self.boot_id:
             log("seed adopted (boot %s); draining changes since boot from the bitmap" % self.boot_id[:8])
             self.recovery_queue.append(-1)          # sentinel: not a ring gap, a seed drain
@@ -408,6 +480,14 @@ class Daemon:
             self.base_thread.start()
 
     # ---------------------------------------------------------------- status
+    def status_loop(self):
+        while not stop:
+            try:
+                self.write_status()
+            except Exception as e:
+                log("status: %s" % e)
+            time.sleep(1.0)
+
     def write_status(self):
         st = dmcdp.status(self.cdp_fd)
         if self.seed_required:
@@ -470,6 +550,7 @@ class Daemon:
         poll.register(self.cdp_fd, select.POLLIN)
         pending = b""
         last_cycle = time.time()
+        threading.Thread(target=self.status_loop, daemon=True).start()
         last_node = 0.0
 
         while not stop:
@@ -500,7 +581,6 @@ class Daemon:
             if now - last_cycle >= self.cycle_sec:
                 self.replica.fsync()
                 self.last_time = now
-                self.write_status()
                 last_cycle = now
             if now - last_node > 3600:
                 write_json(os.path.join(self.root, "node.json"), self.node_json())

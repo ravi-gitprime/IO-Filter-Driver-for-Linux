@@ -6,15 +6,15 @@ rkcdp-seed - seed this node's replica from its own VM disk, copied by the host.
 Runs on the manager itself (pairing stage seed_mgr_replica, or by hand):
   1. find which Proxmox host runs this VM (match our MAC across
      /opt/kvmdr/hypervisors.json hosts) and the VM's disk
-  2. on that host:  qemu-img convert -p disk -> <journal>/<node>/seed.raw
-     (host-local read, NFS write; the VM keeps running)
-  3. copy seed.raw into replica.raw in place (dd conv=notrunc,sparse) so the
-     running rkcdpd keeps its file descriptor
+  2. on that host:  qemu-img convert -p disk -> <journal>/<node>/replica.raw
+     (host-local read, NFS write, in place; the VM keeps running)
+  3. create an empty sparse seed.raw beside it and record the seed point;
+     from then on rkcdpd saves each chunk's seed-time content into seed.raw
+     the first time that chunk changes (copy-on-first-write)
   4. write manifest.seeded = {boot_id, time}; rkcdpd sees it, drains the
      changes made since boot from the kernel bitmap, and reports CDP
 
-seed.raw is kept: it is the "clean, post-setup" image for a rebuild after
-ransomware/corruption. Progress goes to <node>/seed.json (phase, percent).
+Progress goes to <node>/seed.json (phase, percent, bytes, rate).
 
   rkcdp-seed [--journal DIR] [--host IP] [--vmid N]   (both auto-detected)
   rkcdp-seed --status                                  print seed.json
@@ -155,10 +155,13 @@ def main():
             raise RuntimeError("host %s cannot see %s (replication share not mounted there)" % (host, journal))
         progress("locate", 0, "VM %d on %s, disk %s" % (vmid, host, vol), host=host, vmid=vmid, disk=disk)
 
-        # 2. seed.raw on the host, streaming progress
-        seed = os.path.join(nd, "seed.raw")
+        # 2. replica.raw on the host, in place, streaming progress
+        replica = os.path.join(nd, "replica.raw")
+        if not os.path.exists(replica):
+            with open(replica, "wb") as f:
+                f.truncate(total)
         cmd = SSH + ["root@%s" % host,
-                     "qemu-img convert -p -f raw -O raw -S 4k %s %s.tmp && mv -f %s.tmp %s" % (disk, seed, seed, seed)]
+                     "qemu-img convert -n -p -f raw -O raw -S 4k %s %s" % (disk, replica)]
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
         last = -1
         buf = ""
@@ -182,48 +185,47 @@ def main():
                         rate = (samples[-1][1] - samples[0][1]) * total / (samples[-1][0] - samples[0][0])
                     eta = int((1 - frac) * total / rate) if rate > 0 else None
                     if pct != last or now - t0 > 5:
-                        progress("seed", pct, "copying disk on %s" % host, host=host, vmid=vmid,
+                        progress("copy", pct, "copying disk on %s" % host, host=host, vmid=vmid,
                                  done=int(frac * total), total=total,
                                  mbps=round(rate / 1048576, 1), eta_sec=eta)
                         last = pct
                         t0 = now
                 buf = ""
-        if p.wait() != 0 or not os.path.exists(seed):
+        if p.wait() != 0:
             raise RuntimeError("qemu-img convert failed on %s (rc=%s)" % (host, p.returncode))
-        progress("seed", 100, "seed.raw written", host=host, vmid=vmid)
+        progress("copy", 100, "replica.raw written", host=host, vmid=vmid)
 
-        # 3. replica.raw <- seed.raw, in place (rkcdpd keeps its open fd)
-        progress("replica", 0, "copying seed into replica.raw")
-        replica = os.path.join(nd, "replica.raw")
-        size = os.path.getsize(seed)
-        if not os.path.exists(replica):
-            with open(replica, "wb") as f:
-                f.truncate(size)
-        r = subprocess.run(["dd", "if=%s" % seed, "of=%s" % replica, "bs=4M", "conv=notrunc,sparse", "status=none"],
-                           capture_output=True, text=True)
-        if r.returncode != 0:
-            raise RuntimeError("dd into replica.raw failed: %s" % r.stderr.strip()[:200])
-        progress("replica", 100, "replica.raw seeded")
+        # 3. seed point: empty sparse seed.raw; rkcdpd fills it copy-on-first-write
+        seed = os.path.join(nd, "seed.raw")
+        if not os.path.exists(seed):
+            with open(seed, "wb") as f:
+                f.truncate(total)
 
         # 4. tell rkcdpd
         mp = os.path.join(nd, "manifest.json")
         m = load_json(mp, {}) or {}
-        m["seeded"] = {"boot_id": boot_id(), "time": time.time(), "host": host, "vmid": vmid, "disk": vol}
-        m["seed_size"] = size
+        now = time.time()
+        m["seeded"] = {"boot_id": boot_id(), "time": now, "host": host, "vmid": vmid, "disk": vol}
+        m["seed_point"] = {"time": now, "boot_id": boot_id()}
+        m["size"] = total
         write_json(mp, m)
         progress("drain", None, "waiting for rkcdpd to drain changes since boot")
 
-        # 5. wait for CDP (rkcdpd polls the manifest every second)
+        # 5. wait for CDP; no cap — a live daemon is progress, only a dead
+        #    one (no status update for 5 min) or a failure state ends this
         st_path = os.path.join(nd, "status.json")
-        for _ in range(1800):
+        while True:
             st = load_json(st_path, {}) or {}
-            if st.get("state") == "CDP":
+            state = st.get("state")
+            if state == "CDP":
                 progress("done", 100, "protected")
                 return 0
-            if st.get("state") not in ("WAITING", "RECOVERING", "CDP", None):
-                progress("drain", None, "rkcdpd state %s" % st.get("state"))
+            age = time.time() - float(st.get("time") or 0)
+            if st and age > 300:
+                raise RuntimeError("rkcdpd stopped updating status (%d s ago)" % age)
+            if state not in ("WAITING", "RECOVERING", "CDP", None):
+                progress("drain", None, "rkcdpd state %s" % state)
             time.sleep(2)
-        raise RuntimeError("rkcdpd did not reach CDP within 60 min")
     except Exception as e:
         progress("failed", None, str(e))
         log("FAILED: %s" % e)

@@ -116,7 +116,7 @@ function ManagerRecoveryTab({ showToast }) {
               <div style={{ fontSize: 13, color: 'var(--text2)' }}>
                 {n.state === 'seeding' && n.seed ? (
                   <div>
-                    <div>{n.seed.phase === 'seed' && n.seed.percent != null ? `copying disk ${n.seed.percent}%` : n.seed.phase === 'drain' ? 'draining changes since boot' : n.seed.msg || n.seed.phase}</div>
+                    <div>{(n.seed.phase === 'copy' || n.seed.phase === 'seed') && n.seed.percent != null ? `copying disk ${n.seed.percent}%` : n.seed.phase === 'drain' ? 'draining changes since boot' : n.seed.msg || n.seed.phase}</div>
                     {n.seed.percent != null && <div style={{ height: 4, background: 'var(--bg3)', borderRadius: 2, marginTop: 6, maxWidth: 240 }}>
                       <div style={{ height: 4, width: `${n.seed.percent}%`, background: 'var(--blue)', borderRadius: 2 }} />
                     </div>}

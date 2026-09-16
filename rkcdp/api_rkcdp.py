@@ -46,7 +46,7 @@ def _nodes():
         seed = _load(os.path.join(d, "seed.json"), {})
         now = time.time()
         age = now - status.get("time", 0) if status else None
-        if age is not None and age <= STALE_SEC and seed.get("phase") in ("locate", "seed", "replica", "drain"):
+        if age is not None and age <= STALE_SEC and seed.get("phase") in ("locate", "copy", "seed", "replica", "drain"):
             state = "seeding"
         elif age is not None and age <= STALE_SEC and status.get("state") == "WAITING":
             state = "waiting"
