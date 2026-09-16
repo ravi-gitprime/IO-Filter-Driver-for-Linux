@@ -78,15 +78,16 @@ def boot_id():
 def find_vm(hosts, macs):
     """Return (host_ip, vmid) of the VM whose config carries one of our MACs."""
     pat = "|".join(re.escape(m) for m in macs)
-    script = ("for v in $(qm list 2>/dev/null | awk 'NR>1{print $1}'); do "
-              "qm config $v 2>/dev/null | grep -qiE '%s' && echo $v; done" % pat)
+    # judge by output only: grep's exit code is 1 whenever a file does not match
+    script = "grep -liE '%s' /etc/pve/qemu-server/*.conf 2>/dev/null; true" % pat
     for h in hosts:
         ip = h.get("ip") or h.get("hostname")
         if not ip:
             continue
-        r = ssh(ip, script, timeout=60)
-        if r.returncode == 0 and r.stdout.strip():
-            return ip, int(r.stdout.split()[0])
+        r = ssh(ip, script, timeout=30)
+        m = re.search(r"/(\d+)\.conf", r.stdout or "")
+        if m:
+            return ip, int(m.group(1))
     return None, None
 
 
