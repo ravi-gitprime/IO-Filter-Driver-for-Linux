@@ -90,6 +90,14 @@ def find_vm(hosts, macs):
     return None, None
 
 
+def disk_size(host, path):
+    r = ssh(host, "blockdev --getsize64 %s 2>/dev/null || stat -c %%s %s" % (path, path))
+    try:
+        return int(r.stdout.split()[0])
+    except (ValueError, IndexError):
+        return 0
+
+
 def vm_disk(host, vmid):
     r = ssh(host, "qm config %d | grep -E '^(scsi|virtio|sata)0:' | head -1" % vmid)
     m = re.search(r":\s*([^,\s]+)", r.stdout)
@@ -141,6 +149,7 @@ def main():
         if not host or not vmid:
             raise RuntimeError("could not find a VM with this node's MAC on any host in %s" % HOSTS_FILE)
         vol, disk = vm_disk(host, vmid)
+        total = disk_size(host, disk)
         r = ssh(host, "test -d %s && echo ok" % journal)
         if "ok" not in r.stdout:
             raise RuntimeError("host %s cannot see %s (replication share not mounted there)" % (host, journal))
@@ -153,6 +162,8 @@ def main():
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
         last = -1
         buf = ""
+        t0 = time.time()
+        samples = []          # (time, fraction) for a moving rate
         while True:
             ch = p.stdout.read(1)
             if not ch:
@@ -161,10 +172,21 @@ def main():
             if ch in "\r\n":
                 m = re.search(r"\((\d+(?:\.\d+)?)/100%\)", buf)
                 if m:
-                    pct = int(float(m.group(1)))
-                    if pct != last:
-                        progress("seed", pct, "copying disk on %s" % host, host=host, vmid=vmid)
+                    frac = float(m.group(1)) / 100.0
+                    pct = int(frac * 100)
+                    now = time.time()
+                    samples.append((now, frac))
+                    samples = [x for x in samples if now - x[0] <= 60] or samples[-1:]
+                    rate = 0.0
+                    if len(samples) >= 2 and samples[-1][0] > samples[0][0]:
+                        rate = (samples[-1][1] - samples[0][1]) * total / (samples[-1][0] - samples[0][0])
+                    eta = int((1 - frac) * total / rate) if rate > 0 else None
+                    if pct != last or now - t0 > 5:
+                        progress("seed", pct, "copying disk on %s" % host, host=host, vmid=vmid,
+                                 done=int(frac * total), total=total,
+                                 mbps=round(rate / 1048576, 1), eta_sec=eta)
                         last = pct
+                        t0 = now
                 buf = ""
         if p.wait() != 0 or not os.path.exists(seed):
             raise RuntimeError("qemu-img convert failed on %s (rc=%s)" % (host, p.returncode))
