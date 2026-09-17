@@ -6,8 +6,9 @@ rkcdp-seed - seed this node's replica from its own VM disk, copied by the host.
 Runs on the manager itself (pairing stage seed_mgr_replica, or by hand):
   1. find which Proxmox host runs this VM (match our MAC across
      /opt/kvmdr/hypervisors.json hosts) and the VM's disk
-  2. on that host:  qemu-img convert -p disk -> <journal>/<node>/replica.raw
-     (host-local read, NFS write, in place; the VM keeps running)
+  2. on that host: chunked dd of the disk -> <journal>/<node>/replica.raw
+     (64 MiB chunks, sparse, in place; the VM keeps running). Resumable:
+     seed.json remembers the last finished chunk, a retry continues from it
   3. create an empty sparse seed.raw beside it and record the seed point;
      from then on rkcdpd saves each chunk's seed-time content into seed.raw
      the first time that chunk changes (copy-on-first-write)
@@ -132,9 +133,16 @@ def main():
         print(json.dumps(load_json(seed_json, {"phase": "none"}), indent=1))
         return 0
 
+    resume = dict((load_json(seed_json, {}) or {}).get("resume") or {})
+
     def progress(phase, pct=None, msg="", **kw):
         d = {"phase": phase, "percent": pct, "msg": msg, "time": time.time(), "node": node}
         d.update(kw)
+        if "chunk" in kw:
+            resume.update(host=kw.get("host"), vmid=kw.get("vmid"), total=kw.get("total"), chunk=kw["chunk"])
+        if phase == "done":
+            resume.clear()
+        d["resume"] = dict(resume)
         write_json(seed_json, d)
         log("%s %s%s" % (phase, ("%d%% " % pct) if pct is not None else "", msg))
 
@@ -156,44 +164,51 @@ def main():
             raise RuntimeError("host %s cannot see %s (replication share not mounted there)" % (host, journal))
         progress("locate", 0, "VM %d on %s, disk %s" % (vmid, host, vol), host=host, vmid=vmid, disk=disk)
 
-        # 2. replica.raw on the host, in place, streaming progress
+        # 2. replica.raw on the host, in place, chunked and resumable:
+        #    64 MiB chunks, one ssh session; the host prints each finished
+        #    chunk index, seed.json keeps it, a retry resumes from there.
         replica = os.path.join(nd, "replica.raw")
         if not os.path.exists(replica):
             with open(replica, "wb") as f:
                 f.truncate(total)
-        cmd = SSH + ["root@%s" % host,
-                     "qemu-img convert -n -p -f raw -O raw -S 4k %s %s" % (disk, replica)]
-        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-        last = -1
-        buf = ""
+        CH = 64 << 20
+        nchunks = (total + CH - 1) // CH
+        start = 0
+        if resume.get("host") == host and resume.get("vmid") == vmid and resume.get("total") == total \
+                and isinstance(resume.get("chunk"), int):
+            start = resume["chunk"] + 1
+            log("resuming copy at chunk %d/%d" % (start, nchunks))
+        script = ("for i in $(seq %d %d); do "
+                  "dd if=%s of=%s bs=%d skip=$i seek=$i count=1 conv=notrunc,sparse iflag=fullblock status=none || exit 1; "
+                  "echo $i; done" % (start, nchunks - 1, disk, replica, CH))
+        cmd = SSH + ["root@%s" % host, script]
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
         t0 = time.time()
-        samples = []          # (time, fraction) for a moving rate
-        while True:
-            ch = p.stdout.read(1)
-            if not ch:
-                break
-            buf += ch
-            if ch in "\r\n":
-                m = re.search(r"\((\d+(?:\.\d+)?)/100%\)", buf)
-                if m:
-                    frac = float(m.group(1)) / 100.0
-                    pct = int(frac * 100)
-                    now = time.time()
-                    samples.append((now, frac))
-                    samples = [x for x in samples if now - x[0] <= 60] or samples[-1:]
-                    rate = 0.0
-                    if len(samples) >= 2 and samples[-1][0] > samples[0][0]:
-                        rate = (samples[-1][1] - samples[0][1]) * total / (samples[-1][0] - samples[0][0])
-                    eta = int((1 - frac) * total / rate) if rate > 0 else None
-                    if pct != last or now - t0 > 5:
-                        progress("copy", pct, "copying disk on %s" % host, host=host, vmid=vmid,
-                                 done=int(frac * total), total=total,
-                                 mbps=round(rate / 1048576, 1), eta_sec=eta)
-                        last = pct
-                        t0 = now
-                buf = ""
-        if p.wait() != 0:
-            raise RuntimeError("qemu-img convert failed on %s (rc=%s)" % (host, p.returncode))
+        samples = []
+        last_pct = -1
+        last_w = 0
+        for line in p.stdout:
+            line = line.strip()
+            if not line.isdigit():
+                continue
+            i = int(line)
+            done_b = min(total, (i + 1) * CH)
+            frac = done_b / total
+            pct = int(frac * 100)
+            now = time.time()
+            samples.append((now, done_b))
+            samples = [x for x in samples if now - x[0] <= 60] or samples[-1:]
+            rate = 0.0
+            if len(samples) >= 2 and samples[-1][0] > samples[0][0]:
+                rate = (samples[-1][1] - samples[0][1]) / (samples[-1][0] - samples[0][0])
+            eta = int((total - done_b) / rate) if rate > 0 else None
+            if pct != last_pct or now - last_w > 5:
+                progress("copy", pct, "copying disk on %s" % host, host=host, vmid=vmid,
+                         chunk=i, done=done_b, total=total, mbps=round(rate / 1048576, 1), eta_sec=eta)
+                last_pct, last_w = pct, now
+        rc = p.wait()
+        if rc != 0:
+            raise RuntimeError("copy failed on %s (rc=%s): %s" % (host, rc, (p.stderr.read() or "")[-200:].strip()))
         progress("copy", 100, "replica.raw written", host=host, vmid=vmid)
 
         # 3. seed point: empty sparse seed.raw; rkcdpd fills it copy-on-first-write
