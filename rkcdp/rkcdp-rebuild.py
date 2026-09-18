@@ -39,6 +39,15 @@ class Progress:
                   "msg": "", "steps": [], "started": time.time(), "error": None}
         self.flush()
 
+    def copy(self, done, total, mbps, eta):
+        """Byte progress of step 3. cp gives nothing, so the caller polls the
+        destination file and reports here — same fields the pairing seed row
+        uses (done, total, percent, mbps, eta_sec)."""
+        self.d["copy"] = {"done": done, "total": total, "mbps": mbps,
+                          "eta_sec": eta,
+                          "percent": int(done * 100 / total) if total else None}
+        self.flush()
+
     def step(self, n, msg):
         self.d["step"] = n
         self.d["msg"] = msg
@@ -147,6 +156,34 @@ def mark_standby(copy_path):
         sh("losetup -d %s" % loop, check=False)
 
 
+def _copy_with_progress(src, dst, pg, poll=3.0):
+    """cp the replica, reporting bytes as it goes. Total is the replica's
+    ALLOCATED size (it is sparse), which is what cp --sparse=always writes."""
+    try:
+        total = os.stat(src).st_blocks * 512
+    except Exception:
+        total = None
+    proc = subprocess.Popen(["cp", "--sparse=always", src, dst])
+    t0 = time.time()
+    last_t, last_done = t0, 0
+    while proc.poll() is None:
+        time.sleep(poll)
+        try:
+            done = os.stat(dst).st_blocks * 512
+        except Exception:
+            continue
+        now = time.time()
+        mbps = round((done - last_done) / (now - last_t) / 1048576, 1) if now > last_t else None
+        last_t, last_done = now, done
+        eta = None
+        if total and mbps and mbps > 0:
+            eta = int((total - done) / (mbps * 1048576))
+        pg.copy(done, total, mbps, eta)
+    if proc.returncode != 0:
+        raise RuntimeError("cp failed rc=%s" % proc.returncode)
+    pg.copy(total or last_done, total, None, 0)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--node", required=True)
@@ -211,7 +248,7 @@ def main():
             pg.step(3, "copying replica, then laying the seed-time chunks back over it")
         else:
             pg.step(3, "copying replica (as of seq %s, %s)" % (last_seq, time.strftime("%H:%M:%S", time.localtime(last_time or 0))))
-        sh("cp --sparse=always %s %s" % (replica, copy_path), timeout=3600)
+        _copy_with_progress(replica, copy_path, pg)
         if a.source == "seed":
             overlay_seed(seed, copy_path)
         os.remove(lock)
