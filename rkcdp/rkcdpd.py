@@ -32,6 +32,8 @@ Config /etc/rkcdp/rkcdp.conf (JSON):
   node            hostname
   cycle_sec       1.0      fsync + status interval
   base_copy_mbps  15       throttle for base copy and bitmap recovery
+  consistent_sec  3600     how often to take a consistent point (0 = never)
+  freeze_cap_sec  30       longest the filesystem may stay frozen for one
 """
 import fcntl
 import json
@@ -304,6 +306,9 @@ class Daemon:
         self.base_progress = {}
         self.recovery_thread = None
         self.recovery_queue = []        # gap seqs waiting for a recovery run
+        self.consistent_sec = float(conf.get("consistent_sec") or 3600)
+        self.freeze_cap_sec = float(conf.get("freeze_cap_sec") or 30)
+        self.last_consistent = 0.0
         self.gap_seen = None
         self.last_seq = None
         self.last_time = None
@@ -391,6 +396,62 @@ class Daemon:
         self.replica.fsync()
         os.unlink(self.recovery_path)
         log("bitmap recovery: %d MiB re-read (gap at seq %s)" % (total >> 20, rec["gap_seq"]))
+
+    # ------------------------------------------------------- consistent point
+    def mark_consistent(self):
+        """Give the replica a point it is actually consistent AT.
+
+        Found 18 Sep 2026: both managers' replica.raw failed e2fsck at rest —
+        extents past their end, block-bitmap checksum mismatches. Nothing had
+        crashed. Writes are applied in order, but each one lands at a
+        different instant and the replica is never quiesced, so the image is
+        a smear across time: metadata that never coexisted on the live disk.
+        A rebuild from it mounted, hit a bad bitmap checksum seconds in and
+        remounted read-only.
+
+        So: freeze the filesystem, let the in-flight records land, fsync, and
+        record the sequence number reached. The replica still has no single
+        instant — but seq <= consistent_seq does, and that is the only point
+        a rebuild may use. The node stalls for the freeze (sub-second when
+        the writer is idle); postgres handles that, and heal-standby brings
+        the DB forward from the peer afterwards, so the replica does not need
+        to be current — only safe."""
+        if self.paused() or self.recovery_active() or self.base_progress:
+            return                                   # not a settled moment
+        t0 = time.time()
+        frozen = False
+        try:
+            r = subprocess.run(["fsfreeze", "-f", "/"], capture_output=True, text=True,
+                               timeout=self.freeze_cap_sec)
+            if r.returncode != 0:
+                log("consistent point: freeze refused (%s)" % (r.stderr or "").strip()[:80])
+                return
+            frozen = True
+            # Drain what the freeze flushed: the kernel ring holds it already,
+            # we only have to read it out and apply it before thawing.
+            deadline = t0 + self.freeze_cap_sec
+            pending = b""
+            while time.time() < deadline:
+                try:
+                    data = os.read(self.cdp_fd, READ_SZ)
+                except (BlockingIOError, OSError):
+                    data = b""
+                if not data:
+                    break
+                pending = self.consume(pending + data)
+            self.replica.fsync()
+            seq = self.last_seq
+        finally:
+            if frozen:
+                subprocess.run(["fsfreeze", "-u", "/"], capture_output=True)
+        held = time.time() - t0
+        if self.recovery_queue or self.recovery_active():
+            log("consistent point abandoned: a gap appeared during the freeze")
+            return
+        self.manifest["consistent"] = {"seq": seq, "time": time.time(), "held_sec": round(held, 2)}
+        write_json(self.manifest_path, self.manifest)
+        self.last_consistent = time.time()
+        log("consistent point at seq %s (froze %.2fs)" % (seq, held))
 
     def recovery_active(self):
         return self.recovery_thread is not None and self.recovery_thread.is_alive()
@@ -510,6 +571,7 @@ class Daemon:
             "overflows": st["overflows"], "records": self.records, "bytes": self.bytes,
             "base_copy": dict(self.base_progress) if self.base_progress else None,
             "recovery_gap_seq": rec["gap_seq"] if rec else None,
+            "consistent": self.manifest.get("consistent"),
             "pending_bytes": os.path.getsize(self.pending_path) if os.path.exists(self.pending_path) else 0,
         })
 
@@ -582,6 +644,9 @@ class Daemon:
                 self.replica.fsync()
                 self.last_time = now
                 last_cycle = now
+            if self.consistent_sec > 0 and now - self.last_consistent >= self.consistent_sec \
+                    and "base_end_seq" in self.manifest:
+                self.mark_consistent()
             if now - last_node > 3600:
                 write_json(os.path.join(self.root, "node.json"), self.node_json())
                 last_node = now
